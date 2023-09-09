@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node",
+        "request": "launch",
+        "name": "Launch test",
+        "program": "${workspaceFolder}/test/distest.ts",
+        "env": {"DEBUG":"*,-connect:*"},
+        "preLaunchTask": "tsc: build - tsconfig.json",
+      
+        "outFiles": ["${workspaceFolder}/out/**/*.js"]
+      },
+      {
+        "type": "node",
+        "request": "launch" ,
+        "name": "Launch index",
+        "program": "${workspaceFolder}/index.ts",
+        "preLaunchTask": "tsc: build - tsconfig.json",
+        "outFiles": ["${workspaceFolder}/out/**/*.js"]
+      }
+    ]
+}

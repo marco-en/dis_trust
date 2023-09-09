@@ -1,0 +1,36 @@
+{
+  "name": "dis_trust",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "jest",
+    "build": "tsc"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bittorrent-dht-sodium": "^1.2.0",
+    "buffer": "^6.0.3",
+    "k-bucket": "^5.1.0",
+    "randombytes": "^2.1.0",
+    "sha256": "^0.2.0",
+    "simple-peer": "^9.11.1",
+    "stream-buffers": "^3.0.2",
+    "websocket": "^1.0.34",
+    "wrtc": "^0.4.7"
+  },
+  "devDependencies": {
+    "@types/bencode": "^2.0.1",
+    "@types/debug": "^4.1.8",
+    "@types/expect": "^24.3.0",
+    "@types/k-bucket": "^5.0.1",
+    "@types/simple-peer": "^9.11.5",
+    "@types/sodium-native": "^2.3.5",
+    "@types/stream-buffers": "^3.0.4",
+    "@types/websocket": "^1.0.5",
+    "debug": "^4.3.4",
+    "typescript": "^5.2.2"
+  }
+}
