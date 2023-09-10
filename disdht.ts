@@ -1,10 +1,13 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import { PeerFactory, IStorage, Peer, DHTEntry, MessageEnvelope } from './peer.js';
+import { PeerFactory, IStorage, IStorageValue, BasePeer, MessageEnvelope } from './peer.js';
 import Debug from 'debug';
+import {encode,decode} from './encoder.js';
 
+const KEYLEN=32;
 const KPUT = 20;
 const KGET = KPUT*4;
+const MAXVALUESIZE=1024*1024;
 
 interface ServerIp {
     port: number,
@@ -33,12 +36,17 @@ export class DisDHT {
             this._onNewPeer(peer)
         })
 
-        this._debug=opt.debug || Debug("DisDHT:"+this._peerFactory.id.toString('hex').slice(0,6));
+        this._debug=opt.debug || Debug("DisDHT     :"+this._peerFactory.id.toString('hex').slice(0,6));
+        this._debug.color=this._peerFactory.debug.color;
         this._kbucket = this._peerFactory.kbucket;
         this._debug("created");
     }
 
-    _onNewPeer(peer: Peer) {
+    get id () {
+        return this._peerFactory.id;
+    }
+
+    _onNewPeer(peer: BasePeer) {
         try{
             if (peer.id == null) throw new Error("_onNewPeer is null")
             this._kbucket.add(peer as any);
@@ -72,19 +80,18 @@ export class DisDHT {
      * @returns number of Nodes in which it was saved
      */
 
-    async put(key: Buffer, value: Buffer):Promise<number> {
+    async put(key: Buffer, value: any):Promise<number> {
         this._debug("put....")
+        if (!(key instanceof Buffer) || key.length!=KEYLEN)
+            throw new Error("invalid key");
 
-        var entry:DHTEntry={
-            key:key,
-            value:value
-        }
+        value=encode(value,MAXVALUESIZE);
 
         var r=0;
 
-        const callback=async (peer:Peer)=>{
+        const callback=async (peer:BasePeer)=>{
             r++;
-            let peers= await peer.store(entry,KPUT);
+            let peers= await peer.store(key,value,KPUT);
             return peers;
         }
 
@@ -94,6 +101,7 @@ export class DisDHT {
         return r;
     }
 
+
     /**
      * 
      * @param key 
@@ -102,28 +110,22 @@ export class DisDHT {
      * @returns 
      */
 
-    async getKeyAuthor(key: Buffer, author: Buffer):Promise<MessageEnvelope|null> {
-        this._debug("getKeyAuthor....")
-        let storage=this._opt.storage;
-        var retr=await storage.retreive(key,author,0);
-        var r:MessageEnvelope|null=null;
-        if (retr.length) r=retr[0];
+    async getAuthor(key: Buffer, author: Buffer):Promise<IStorageValue|null> {
+        var isv:IStorageValue|undefined;
 
-        const callback=async (peer:Peer)=>{
-            let f=await peer.findValueAuthor(key,author,KGET);
-            if (f==null)
-                return null;
-            for(let v of f.values){
-                if (r==null || v.t>r.t){
-                    r=v;
-                    await storage.storeMessageEnvelope(v);
-                }
-            }
-            return f.peers;
+        this._debug("getKeyAuthor....")
+
+        const callback=async (peer:BasePeer)=>{
+            let fr=await peer.findValueAuthor(key,author,KGET);
+            if (fr==null) return undefined;
+            for (var v of fr.values)
+                if (isv===undefined || isv.timestamp<v.timestamp) isv=v;
+            return fr.peers;
         }
-        this._closestNodesNavigator(key,KGET,callback);
-        this._debug("getKeyAuthor done")
-        return r;
+
+        await this._closestNodesNavigator(key,KGET,callback);
+    
+        return isv?isv:null;
     }
 
     /**
@@ -133,25 +135,19 @@ export class DisDHT {
      * @param found (messageEnvelope:MessageEnvelope) => Promise<boolean> called for each value found. retunr false if you want to stop getting values
      */
 
-
-    async getAuthor(key: Buffer, author: Buffer, found: (messageEnvelope:MessageEnvelope) => Promise<boolean>):Promise<void> {
+/*
+    async get(key: Buffer,found:(getOutput:GetOutput)=>Promise<boolean>) {
         this._debug("get....")
-        let storage=this._opt.storage;
-        var retr=await storage.retreive(key,null,0);
-        for (let v of retr){
-            if (await found(v)) return;
-        }
 
-        var peerIdString2Peer:Map<string,Peer>=new Map();
+        var peerIdString2Peer:Map<string,BasePeer>=new Map();
 
         let go=true;
 
-        const callback=async (peer:Peer)=>{
+        const callback=async (peer:BasePeer)=>{
             peerIdString2Peer.set(peer.idString,peer);
             let fr=await peer.findValues(key,KGET,0);
             if (fr==null) return null;
             for(let v of fr.values){
-                await storage.storeMessageEnvelope(v);
                 if (go) go=await found(v);
             }
             return go?fr.peers:null;
@@ -169,18 +165,17 @@ export class DisDHT {
                     peerIdString2Peer.delete(peerIdString);
                 }else{
                     for (let v of fr.values){
-                        await storage.storeMessageEnvelope(v);
                         if (!await found(v)) return;     
                     }
                 }
             }
         }
     }
-
-   async _closestNodes(key: Buffer, k: number): Promise<Peer[]> {
+*/
+   async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
         this._debug("_closestnodes.....");
 
-        const callback=(peer:Peer)=>{
+        const callback=(peer:BasePeer)=>{
             return peer.findNode(key,k);
         }
 
@@ -190,12 +185,12 @@ export class DisDHT {
         return r;
     }
 
-    async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:Peer)=>Promise<Peer[]|null|undefined>): Promise<Peer[]> {
+    async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null|undefined>): Promise<BasePeer[]> {
         this._debug("_closestNodesNavigator.....");
         if (k<1) throw new Error("Invalid K");
 
         interface closenode{
-            peer:Peer,
+            peer:BasePeer,
             queried:boolean,
         }
         var closenodes:closenode[]=[];
@@ -208,7 +203,7 @@ export class DisDHT {
         }
         this._debug("_closestnodes start with %d",closenodes.length);
 
-        const addCloseNode=(np:Peer)=>{
+        const addCloseNode=(np:BasePeer)=>{
             for (let cn of closenodes){
                 if (Buffer.compare(np.id as Buffer,cn.peer.id as Buffer)==0)
                     return;

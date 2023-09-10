@@ -17,7 +17,6 @@
     "randombytes": "^2.1.0",
     "sha256": "^0.2.0",
     "simple-peer": "^9.11.1",
-    "stream-buffers": "^3.0.2",
     "websocket": "^1.0.34",
     "wrtc": "^0.4.7"
   },

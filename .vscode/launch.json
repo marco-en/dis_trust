@@ -13,6 +13,16 @@
       },
       {
         "type": "node",
+        "request": "launch",
+        "name": "Launch encoder",
+        "program": "${workspaceFolder}/test/test_encoder.ts",
+        "env": {"DEBUG":"*,-connect:*"},
+        "preLaunchTask": "tsc: build - tsconfig.json",
+      
+        "outFiles": ["${workspaceFolder}/out/**/*.js"]
+      },
+      {
+        "type": "node",
         "request": "launch" ,
         "name": "Launch index",
         "program": "${workspaceFolder}/index.ts",

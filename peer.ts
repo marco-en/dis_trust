@@ -14,11 +14,7 @@ const REPLYTIMEOUT=60*1000;
 const VERSION=1;
 const INTRODUCTIONTIMEOUT=2*1000;
 const KBUCKETSIZE=20;
-
-export interface DHTEntry{
-    key:Buffer;
-    value:Buffer;
-}
+const MAXMSGSIZE=1024*1024;
 
 interface Introduction{
     id:Buffer;
@@ -35,6 +31,7 @@ enum MessageType{
     findvalueNoAuthor,
     signal,
     signalled,
+    add,
 }
 
 /**
@@ -64,9 +61,20 @@ export interface MessageEnvelope{
     s?:Buffer
 }
 
+
+export interface IStorageValue{
+    author:Buffer,
+    key:Buffer,
+    value:Buffer,
+    timestamp:Number,
+    version?:Number,
+    counter?:Number,
+    signature?:Buffer
+}
+
 export interface FindResult{
-    peers:Peer[];
-    values:MessageEnvelope[];
+    peers:BasePeer[];
+    values:IStorageValue[];
 }
 
 /**
@@ -77,9 +85,9 @@ export interface FindResult{
 
 export interface IStorage{
     storeMessageEnvelope:(me:MessageEnvelope)=>Promise<void>,
-    othersKeyStore:(version:number, author:Buffer, key:Buffer, value:Buffer, timestamp:number,  counter:number, signature?:Buffer)=>Promise<void>,
     ownKeyStore:(author:Buffer, key:Buffer, value:Buffer)=>Promise<void>,
-    retreive:(key:Buffer,author:Buffer|null,page:number)=>Promise<MessageEnvelope[]>
+    retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<IStorageValue|null>
+    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<IStorageValue[]>
 }
 
 interface IPendingRequest{
@@ -91,24 +99,47 @@ interface IPendingRequest{
 export class BasePeer extends EventEmitter{
     static peerCnt=0;
     _peerFactory:PeerFactory;
-    _debug:Debug.Debugger;
+
+    _factoryDebug:Debug.Debugger;
+    _debugPrefix:string;
+
+
     constructor(peerFactory:PeerFactory){
         super();
-        this._debug=Debug(this.constructor.name+": "+peerFactory.id.toString('hex').slice(0,6));
-        this._debug("creating new peer")
+        this._debugPrefix="["+this.constructor.name+"]: ";//+peerFactory.id.toString('hex').slice(0,6)+"] ";
         this._peerFactory=peerFactory;
+        this._factoryDebug=this._peerFactory._debug;
+        this._debug("creating new peer");
     }
 
-    peerfactoryId():Buffer{
+    _debug(...args: any[]){
+        var format:string=args.shift();
+        format=this._debugPrefix+format;
+        var params=[...args];
+        this._factoryDebug.call(this,format,...params)
+    }
+
+    get id():Buffer|null{
+        throw new Error("Abstract");
+    }
+    get idString():string{
+        var x=this.id;
+        if (x==null) return "";
+        else return x.toString('hex');
+    }
+    get peerfactoryId():Buffer{
         return this._peerFactory.id;
     }
     destroy(){
+        this.emit('destroy');
+    }
+    async added(status:boolean):Promise<void> {
         throw new Error("Abstract");
     }
     async ping():Promise<boolean>{
         throw new Error("Abstract");
     }
-    async store(dhtEntry:DHTEntry,k:number):Promise<Peer[]|null>{
+    async store(key:Buffer, value: Buffer,k:number):Promise<BasePeer[]|null>{
         throw new Error("Abstract");
     }
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
@@ -117,15 +148,50 @@ export class BasePeer extends EventEmitter{
     async findValues(key:Buffer,k:number,page:number):Promise<FindResult|null>{
         throw new Error("Abstract");
     }
+    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]|undefined>{
+        throw new Error("Abstract");
+    }
+}
 
+class MeAsPeer extends BasePeer{
+    get id():Buffer|null{
+        return this._peerFactory.id;
+    }
+    async ping():Promise<boolean>{
+        return true;
+    }
+    async added(status:boolean):Promise<void> {
+        
+    }
+    async store(key:Buffer, value: Buffer,k:number):Promise<Peer[]|null>{
+        await this._peerFactory.storage.ownKeyStore(this.peerfactoryId,key,value);
+        return this._peerFactory.findClosestPeers(key,k)
+    }
+    async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
+        var value=await this._peerFactory.storage.retreiveAuthor(key,author)
+        var peers=this._peerFactory.findClosestPeers(key,k);
+        return{
+            peers:peers,
+            values:value?[value]:[]
+        }
+    }
+    async findValues(key:Buffer,k:number,page:number):Promise<FindResult|null>{
+        var values=await this._peerFactory.storage.retreiveAnyAuthor(key,page);
+        var peers=this._peerFactory.findClosestPeers(key,k);
+        return{
+            peers:peers,
+            values:values
+        }
+    }
+    async findNode(nodeId:Buffer,k:number):Promise<Peer[]|undefined>{
+        var peers=this._peerFactory.findClosestPeers(nodeId,k);
+        return peers;
+    }
 }
 
 
-
-export class Peer extends BasePeer  {
-    id:Buffer|null=null;
-    idString:string='';
-    get vectorClock() {return 0};
+class Peer extends BasePeer  {
+    _id:Buffer|null=null;
     _created:number;
     _seen:number;
     _reqCnt:number=1;
@@ -135,6 +201,16 @@ export class Peer extends BasePeer  {
     _decrypto_sk:Buffer|null=null;
     _encrypto_pk:Buffer|null=null;
     _timeout:any;
+    _added:boolean=true;
+    _otherAdded:boolean=true;
+
+    get id():Buffer{
+        if (this._id==null)
+            throw new Error("Peer Not Initialized")
+        return this._id;
+    }
+
+    get vectorClock() {return 0};
 
     constructor(peerFactory:PeerFactory){
         super(peerFactory);
@@ -166,11 +242,11 @@ export class Peer extends BasePeer  {
     }
 
     _onIntroduction(introEnvelope:MessageEnvelope){
-        if (this.id!=null) {
+        if (this._id!=null) {
             return this._abortPeer("received double introduction");
         }
-        this.id=introEnvelope.a;
-        this._debug.namespace=this._debug.namespace+" peer "+this.id.toString("hex").slice(0,6);
+        this._id=introEnvelope.a;
+        this._debugPrefix=this._debugPrefix+" <"+this.idString.slice(0,6)+"> "
         this._debug("received introduction");
         this._encrypto_pk=introEnvelope.p.pk;
         this.__intro();
@@ -189,12 +265,37 @@ export class Peer extends BasePeer  {
     }
 
     destroy(){
-        this.removeAllListeners();
         this._debug("destroy");
-        this.id=null;
+        this._id=null;
+        super.destroy();
+    }
+
+    async added(status:boolean):Promise<void> {
+        if (this._added) return;
+        this._added=status;
+        if (await this._fullyRemoved()) return;
+        var me=await this._requestToPeer({added:this._added},MessageType.add);
+        if (!me) return await this._abortPeer("failed to chage added status");
+        this._otherAdded=me.p.added;
+        if (await this._fullyRemoved()) return;
+    }
+
+    async _onAdded(requestEnvelope:MessageEnvelope){
+        this._otherAdded=requestEnvelope.p.added;
+        if (await this._fullyRemoved()) return;
+        await this._replyToPeer({added:this._added},requestEnvelope);
+    }
+
+    async _fullyRemoved():Promise<boolean>{
+        if (this._added || this._otherAdded) return false;
+        this._debug("fully removed");
+        this.destroy();
+        return true;
     }
 
     async ping():Promise<boolean>{
+        if (this._id==null)
+            throw new Error("Peer not initailized");
         var r=false;
         try{
             var me=await this._requestToPeer({},MessageType.ping);
@@ -209,20 +310,24 @@ export class Peer extends BasePeer  {
 
     /**
      * 
-     * @param dhtEntry ket value to store
-     * @param k parameter
-     * @returns 
+     * @param key key to store
+     * @param value value
+     * @param k nearest neighb.
+     * @returns list of peers
      */
 
-    async store(dhtEntry:DHTEntry,k:number):Promise<Peer[]|null>{
+    async store(key:Buffer, value: Buffer,k:number):Promise<BasePeer[]|null>{
         this._debug("store...");
+        if (this._id==null)
+            throw new Error("Peer not initialized");
         await this._peerFactory.storage.ownKeyStore(
             this._peerFactory.id,
-            dhtEntry.key,
-            dhtEntry.value
+            key,
+            value
         );
         var res=await this._requestToPeer({
-            e:dhtEntry,
+            key:key,
+            value:value,
             k:k
         },MessageType.store);
         if (!res) return null;
@@ -233,10 +338,8 @@ export class Peer extends BasePeer  {
 
     async _onStore(storeEnvelope:MessageEnvelope,){
         this._debug("_onStore...");
-        await this._peerFactory.storage.othersKeyStore(
-            storeEnvelope.v,storeEnvelope.a,storeEnvelope.p.e.key,storeEnvelope.p.e.value,
-            storeEnvelope.t,storeEnvelope.c,storeEnvelope.s)
-        var ids=await this._onFindNodeInner(storeEnvelope.p.e.key,storeEnvelope.p.k)
+        await this._peerFactory.storage.storeMessageEnvelope(storeEnvelope);
+        var ids=await this._onFindNodeInner(storeEnvelope.p.key,storeEnvelope.p.k)
         await this._replyToPeer({ids:ids},storeEnvelope);
         this._debug("_onStore done");
     }
@@ -248,7 +351,9 @@ export class Peer extends BasePeer  {
      * @returns 
      */
 
-    async findNode(nodeId:Buffer,k:number):Promise<Peer[]|undefined>{
+    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]|undefined>{
+        if (this._id==null)
+            throw new Error("Peer not initialized");
         var nodesMessage=await this._requestToPeer({
             n:nodeId,
             k:k
@@ -258,9 +363,9 @@ export class Peer extends BasePeer  {
         return await this._nodeids2peers(nodesIds);
     }
 
-    async _nodeids2peers(ids:Buffer[]):Promise<Peer[]>{
+    async _nodeids2peers(ids:Buffer[]):Promise<BasePeer[]>{
         var nodesIds:Buffer[]=ids;
-        var r:Peer[]=[];
+        var r:BasePeer[]=[];
         for(var nodeid of nodesIds){
             if (Buffer.compare(nodeid,this._peerFactory.id)==0)
                 continue;
@@ -293,6 +398,8 @@ export class Peer extends BasePeer  {
      */
 
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
+        if (this._id==null)
+            throw new Error("Peer not initialized");
         var q:any={
             n:key,
             b:author,
@@ -311,11 +418,11 @@ export class Peer extends BasePeer  {
         var key=findValueMessage.p.n;
         var author=findValueMessage.p.b;
         var k=findValueMessage.p.k;
-        var values=await this._peerFactory.storage.retreive(key,author,0);
+        var value=await this._peerFactory.storage.retreiveAuthor(key,author);
         let ids=await this._onFindNodeInner(key,k);
         await this._replyToPeer({
             ids:ids,
-            values:values
+            values:[value]
         },findValueMessage);
     }
 
@@ -328,6 +435,8 @@ export class Peer extends BasePeer  {
      */
 
     async findValues(key:Buffer,k:number,page:number):Promise<FindResult|null>{
+        if (this._id==null)
+            throw new Error("Peer not initialized");
         var q:any={
             n:key,
             p:page,
@@ -347,26 +456,29 @@ export class Peer extends BasePeer  {
         var page=findValueMessage.p.p;
         var k=findValueMessage.p.k;
         let ids=await this._onFindNodeInner(key,k);
-        var values=await this._peerFactory.storage.retreive(key,null,page);
+        var values=await this._peerFactory.storage.retreiveAnyAuthor(key,page);
         await this._replyToPeer({
             ids:ids,
             values:values,
         },findValueMessage);
     }
 
-    _signalConnect(nodeid:Buffer):Promise<Peer>{
+    _signalConnect(nodeid:Buffer):Promise<BasePeer>{
         this._debug("_signalConnect...");
         return new Promise((resolve,reject)=>{
             var simplePeer:SimplePeer.Instance|undefined;
             try{
+                if (Buffer.compare(nodeid,this.peerfactoryId)){
+                    return resolve(this._peerFactory.MyselfPeer);
+                };
                 simplePeer=new SimplePeer({initiator: true, trickle: false, wrtc: wrtc as any });
                 simplePeer.on('signal', async (data:any) => {
                     this._debug("_signalConnect signal...");
                     var signaldata=JSON.stringify(data)
                     if (!simplePeer) return this._debug("_signalConnect signal with no simplePeer defined");
                     const me=await this._requestToPeer({
-                        p:nodeid, // node to connect
-                        s:signaldata
+                        signalTo:nodeid, // node to connect
+                        signalData:signaldata
                     },MessageType.signal)
                     if (!me || !me.p || !me.p.s) {
                         simplePeer.emit('error','did not receive signal data');
@@ -388,7 +500,7 @@ export class Peer extends BasePeer  {
                 simplePeer.on('connect',()=>{
                     this._debug("_signalConnect connect...");
                     if (!simplePeer) return this._debug("_signalConnect signal with no simplePeer defined");
-                    var r=new VerySimplePeer(this._peerFactory,simplePeer);
+                    let r=new VerySimplePeer(this._peerFactory,simplePeer);
                     r.on('ready',()=>{
                         if (r.id==null)
                             return reject("Node has no id!")
@@ -414,12 +526,12 @@ export class Peer extends BasePeer  {
     }
 
     async _onRequestSignal(signalEnvelope:MessageEnvelope){
-        var peerToCall=this._peerFactory.findPeerById(signalEnvelope.p.p);
+        var peerToCall=this._peerFactory.findPeerById(signalEnvelope.p.signalTo);
         if (peerToCall==null){
             return this._replyToPeer({},signalEnvelope); 
         }
         var signalback=await peerToCall._requestToPeer({
-            s:signalEnvelope
+            forwardedSignalEnvelope:signalEnvelope
         },MessageType.signalled);
         if (signalback==null){
             return this._replyToPeer({},signalEnvelope); 
@@ -430,17 +542,23 @@ export class Peer extends BasePeer  {
     _onRequestSignalled(signalledEnvelope:MessageEnvelope):Promise<void>{
         return new Promise(async (resolve,reject)=>{
             try{
-                if (!this._verifySignedMessageEnvelope(signalledEnvelope.p.s)){
+                var forwardedSignalEnvelope:MessageEnvelope=signalledEnvelope.p.forwardedSignalEnvelope;
+                if (!this._verifySignedMessageEnvelope(forwardedSignalEnvelope)){
                     reject (new Error("could not verify incoming signal"));
                     this._abortPeer("could not verify incoming signal");
                     return;
                 }
-                var nodeid:Buffer=signalledEnvelope.p.s.p.p;
-                var inboundSignaldata:string=signalledEnvelope.p.s.p.s;
+                if (Buffer.compare(forwardedSignalEnvelope.p.signalTo,this.peerfactoryId)){
+                    reject (new Error("received request to signal not for me"));
+                    this._abortPeer("received request to signal not for me");
+                }
+                var nodeid:Buffer=forwardedSignalEnvelope.a;
+                var inboundSignaldata:string=forwardedSignalEnvelope.p.signalData;
                 var knownSimplePeer=this._peerFactory.findPeerById(nodeid)
                 if (knownSimplePeer!=null){
                     // he does not know me, I know him...
-                    console.log("That's weird!!!!!!")
+                    this._debug("Received signal request from %s why???",nodeid.toString('hex').slice(6));
+                    reject("he does not knows me i know him")
                     return;
                 }
                 var simplePeer=new SimplePeer({trickle: false, wrtc: wrtc as any});
@@ -481,6 +599,8 @@ export class Peer extends BasePeer  {
                 return await this._onRequestSignal(requestEnvelope);
             case MessageType.signalled:
                 return await this._onRequestSignalled(requestEnvelope);
+            case MessageType.add:
+                return await this._onAdded(requestEnvelope);
         }
         await this._abortPeer("invalid message type");
     }
@@ -488,7 +608,8 @@ export class Peer extends BasePeer  {
     _requestToPeer(request:any,messageType:MessageType):Promise<MessageEnvelope|null>{
         return new Promise(async (resolve,reject)=>{
             var timeout:any=null;
-            if (this.id==null) return reject("not yet introduced");
+            if (this.id==null) 
+                return reject("not yet introduced");
             try{
                 var cnt=this._reqCnt++;
                 var packedRequest=this._packRequest(request,messageType,cnt);
@@ -503,7 +624,8 @@ export class Peer extends BasePeer  {
                 });
             }catch(err){
                 if (timeout!=null) clearTimeout(timeout);
-                this.emit('error',"cannot contact peer")
+                this.emit('error',"cannot contact peer");
+                await this._abortPeer("cannot contact peer");
                 reject(err);
             }
         })
@@ -539,7 +661,7 @@ export class Peer extends BasePeer  {
     _packRequest(payload:any,m:MessageType,cnt:number):Buffer{
         var requestEnvelope:MessageEnvelope={
             v:VERSION,
-            a:this.peerfactoryId(),
+            a:this.peerfactoryId,
             m:m,
             p:payload,
             t:Date.now(),
@@ -551,7 +673,7 @@ export class Peer extends BasePeer  {
     _packReply(reply:any,requestEnvelope:any,tbc:boolean=false):Buffer{
         var replyEnvelope:MessageEnvelope={
             v:VERSION,
-            a:this.peerfactoryId(),
+            a:this.peerfactoryId,
             m:MessageType.reply,
             p:reply,
             t:Date.now(),
@@ -561,16 +683,16 @@ export class Peer extends BasePeer  {
     }
 
     _packEnvelope(envelope:MessageEnvelope):Buffer{
-        var envelopeBuffer=encode(envelope);
+        var envelopeBuffer=encode(envelope,MAXMSGSIZE);
         var requestSignature=this._peerFactory.sign(envelopeBuffer);
-        var signedRequestBuffer=encode({m:envelopeBuffer,s:requestSignature});
+        var signedRequestBuffer=encode({m:envelopeBuffer,s:requestSignature},MAXMSGSIZE);
         var signedBuffer=Buffer.from(signedRequestBuffer);
         var r:any;
         if (this._encrypto_pk)
             r={e:sodium.crypto_box_encrypt(signedBuffer,this._encrypto_pk)};
         else 
             r={c:signedBuffer};
-        return encode(r);
+        return encode(r,MAXMSGSIZE);
     }
 
     _unpacksignedBuffer(incomingMessage:Buffer):MessageEnvelope|null{
@@ -613,12 +735,11 @@ export class Peer extends BasePeer  {
         if (!me.s) return false;
         let m={...me};
         delete m.s;
-        var b=encode(m);
+        var b=encode(m,MAXMSGSIZE);
         return this._peerFactory.verify(b,me.s,me.a);
     }
 
     _sendMsg(msg:Buffer):Promise<void>{
-        this.emit("Abstract to be implemented in sub classes");
         throw new Error("Abstract to be implemented in sub classes"); // 
     }
 
@@ -650,7 +771,7 @@ class PeerWebsocket extends Peer{
             try{
                 this._connection.sendBytes(msg,err=>{
                     if (err) 
-                        reject(err);
+                        throw new Error("could not sendBytes to websocket");
                     else 
                         resolve();
                 })
@@ -746,6 +867,9 @@ class VerySimplePeer extends Peer{
         this._simplePeer.on('data',async (data:Buffer)=>{
             await this._onMsg(data);
         })
+        this._simplePeer.on('error',err=>{
+            this._abortPeer("VerySimplePeer on error "+err);
+        })
         this._introduceMyself();
     }
 
@@ -775,6 +899,9 @@ export class PeerFactory extends EventEmitter{
     _kbucket:KBucket;
     _debug:Debug.Debugger;
     _peerWebsocketListener:PeerWebsocketListener[]=[];
+    _meAsPeer:MeAsPeer;
+    _outofbucket:Map<string,BasePeer>=new Map();
+
 
     constructor(storage: IStorage,secretKey?:Buffer){
         super();
@@ -808,13 +935,34 @@ export class PeerFactory extends EventEmitter{
             }
             this._debug("ping all replied");
         });
-        this._kbucket.on('removed',peer=>{
-            (peer as Peer).destroy();
-        })
+        this._kbucket.on('added',async contact=>{
+            var peer:BasePeer=contact as any;
+            this._outofbucket.delete(peer.idString);
+            await peer.added(true);
+        });
+        this._kbucket.on('removed',async contact=>{
+            var peer:BasePeer=contact as any;
+            if(peer==this.MyselfPeer)
+                this._kbucket.add(contact);
+            else{
+                await peer.added(false);
+                this._outofbucket.set(peer.idString,peer);
+            }
+        });
+        this._meAsPeer=new MeAsPeer(this);
+        this._kbucket.add(this._meAsPeer as any);
+    }
+
+    get MyselfPeer():BasePeer{
+        return this._meAsPeer;
     }
 
     get kbucket():KBucket{
         return this._kbucket;
+    }
+
+    get debug(){
+        return this._debug;
     }
 
     newPeer(peer:Peer):Promise<void>{
@@ -830,6 +978,10 @@ export class PeerFactory extends EventEmitter{
             }
     
             peer.once('ready',ready);
+            peer.once('destroy',()=>{
+                this._kbucket.remove(peer.id);
+                this._outofbucket.delete(peer.idString);
+            })
             peer.on('error',(err)=>{
                 this.removeListener('ready',ready);
                 this._debug("Error by peer "+err);
@@ -839,7 +991,10 @@ export class PeerFactory extends EventEmitter{
     }
 
     findPeerById(id:Buffer):Peer|null{
-        return this._kbucket.get(id) as any;
+        var r=this._kbucket.get(id) as any;
+        if (r) return r;
+        r=this._outofbucket.get(id.toString('hex'));
+        return r?r:null;
     }
 
     findClosestPeers(key:Buffer,k:number):Peer[]{

@@ -1,5 +1,9 @@
 import {Buffer} from 'buffer';
-import {WritableStreamBuffer} from 'stream-buffers';
+import Debug from 'debug';
+
+const debug=Debug("encoder")
+
+const TESTING=false;
 
 enum ET{
     end=0,
@@ -17,13 +21,42 @@ enum ET{
 
 }
 
-const ETBufs:Buffer[]=[];
 
-for(let i=ET.end;i<=ET.object;i++){
-    ETBufs.push(Buffer.from([i]));
+class BufferWriter{
+    _buffer:Buffer;
+    _maxSize:number;
+    _end=0;
+    constructor(maxSize:number=1024*1024,initAlloc:number=512){
+        this._buffer=Buffer.alloc(initAlloc);
+        this._maxSize=maxSize;
+    }
+
+    _alloc(size:number):void{
+        if(this._end+size<this._buffer.length) return;
+        var ns=Math.min(this._buffer.length*2+size,this._maxSize);
+        if(this._end+size>=ns) throw new Error("buffer bigger than bigger size");
+        var nb=Buffer.alloc(ns);
+        this._buffer.copy(nb);
+        this._buffer=nb;
+    }
+
+    writeByte(c:number):void{
+        this._alloc(1);
+        this._buffer[this._end++]=c;
+    }
+
+    write(b:Buffer): void {
+        this._alloc(b.length);
+        b.copy(this._buffer,this._end);
+        this._end+=b.length;
+    }
+
+    getContent():Buffer{
+        return this._buffer.subarray(0,this._end);
+    }
 }
 
-function _varLen(obj:any,sb:WritableStreamBuffer,type:number){
+function _varLen(obj:any,sb:BufferWriter,type:number){
     var b:Number;
     var f:Buffer;
     if(obj.length==0){
@@ -51,47 +84,51 @@ function _varLen(obj:any,sb:WritableStreamBuffer,type:number){
     sb.write(f);
 }
 
-function _goBuffer(obj:Buffer, sb:WritableStreamBuffer,type:number){
+function _goBuffer(obj:Buffer, sb:BufferWriter,type:number){
     _varLen(obj,sb,type);
     sb.write(obj);
 }
 
-function _goString(str:string,sb:WritableStreamBuffer){
-    sb.write(ETBufs[ET.string]);
-    sb.write(Buffer.from(str));
-    sb.write(ETBufs[ET.end]);
+function _goString(str:string,sb:BufferWriter){
+    sb.writeByte(ET.string);
+    var bf=Buffer.from(str);
+    if (TESTING){
+        for(let b of bf)
+            if (!b)
+                throw new Error("what?");
+    }
+
+    sb.write(bf);
+    sb.writeByte(ET.end);
 }
 
-function _goArray(array:any[], sb:WritableStreamBuffer){
-    sb.write(ETBufs[ET.array]);
+function _goArray(array:any[], sb:BufferWriter){
+    sb.writeByte(ET.array);
     for (let i=0;i<array.length;i++)
         _go(array[i],sb);
-    sb.write(ETBufs[ET.end]); 
+    sb.writeByte(ET.end); 
 }
 
-function _goObject(obj:Object, sb:WritableStreamBuffer){
-    sb.write(ETBufs[ET.object]);
+function _goObject(obj:Object, sb:BufferWriter){
+    sb.writeByte(ET.object);
     for (const [prop, value] of Object.entries(obj)) {
         sb.write(Buffer.from(prop));
-        sb.write(ETBufs[ET.end]);
+        sb.writeByte(ET.end);
         _go(value,sb);
     }
-    sb.write(ETBufs[ET.end]);
+    sb.writeByte(ET.end);
 }
 
-function _go(obj:any,sb:WritableStreamBuffer){
+function _go(obj:any,sb:BufferWriter){
     var numbuf:Buffer|undefined;
-    if (obj==null){
-        sb.write(ETBufs[ET.null]);
-        return;
-    }
+
     switch(typeof(obj)){
         case "boolean":
-            if (obj) sb.write(ETBufs[ET.true]);
-            else sb.write(ETBufs[ET.false])
+            if (obj) sb.writeByte(ET.true);
+            else sb.writeByte(ET.false)
             return;
         case "number":
-            sb.write(ETBufs[ET.number]);
+            sb.writeByte(ET.number);
             if (!numbuf) numbuf=Buffer.alloc(8);
             numbuf.writeDoubleLE(obj as number)
             sb.write(numbuf);
@@ -100,7 +137,9 @@ function _go(obj:any,sb:WritableStreamBuffer){
             _goString(obj as string,sb);
             return;
         case "object":
-            if (obj instanceof Buffer)
+            if (obj==null)
+                sb.writeByte(ET.null);
+            else if (obj instanceof Buffer)
                 _goBuffer(obj,sb,ET.buffer0)
             else if(Array.isArray(obj))
                 _goArray(obj,sb);
@@ -112,11 +151,26 @@ function _go(obj:any,sb:WritableStreamBuffer){
     }
 }
 
-export function encode(obj:any):Buffer{
-    const sb=new WritableStreamBuffer();
+export function encode(obj:any,maxSize:number):Buffer{
+    const sb=new BufferWriter(maxSize);
     _go(obj,sb);
-    const r=sb.getContents();
+    const r=sb.getContent();
     if (!r) throw new Error("could not encode");
+
+    if (TESTING){
+        let dec;
+        try{
+            dec=decode(r);
+        }catch(err){
+            debug("decode fatal")
+            throw(err);
+        }
+        if (JSON.stringify(obj)!=JSON.stringify(dec)){
+            debug("encoder fatal")
+            throw new Error("encode fatal");
+        }
+    }
+
     return r
 }
 
@@ -153,22 +207,19 @@ class BufferReader{
     }
 }
 
-function readlen(br:BufferReader,byteslen:number):number{
+
+function readBuffer(br:BufferReader,byteslen:number):Buffer{
     var b=br.getBuffer(byteslen);
     if (b==null) throw new Error("invalid decode object len")
-    return b.readUIntLE(0,byteslen);
-}   
+    const len= b.readUIntLE(0,byteslen);
+    var r=br.getBuffer(len);
+    if (!r) throw new Error("cannot decode buffer");
+    return r;
+}
 
 function readString(br:BufferReader):string{
     var r=br.getString();
     if (!r) throw new Error("cannot decode string");
-    return r;
-}
-
-function readBuffer(br:BufferReader,byteslen:number):Buffer{
-    const len=readlen(br,byteslen);
-    var r=br.getBuffer(len);
-    if (!r) throw new Error("cannot decode buffer");
     return r;
 }
 

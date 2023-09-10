@@ -1,20 +1,23 @@
 
 
-import { IStorage, MessageEnvelope } from "../peer.js";
+import { IStorage, IStorageValue, MessageEnvelope } from "../peer.js";
 
 const PAGESIZE=2;
 
 
+
+
+
 export default class mockupStorage implements IStorage{
 
-    _db:Map<string,MessageEnvelope[]>=new Map();
+    _db:Map<string,IStorageValue[]>=new Map();
 
     constructor(){
 
     }
 
     async storeMessageEnvelope(me:MessageEnvelope){
-        var d={
+        var d:IStorageValue={
             version:me.v,
             author:me.a,
             key:me.p.key,
@@ -26,30 +29,17 @@ export default class mockupStorage implements IStorage{
         this._innerStore(d);        
     }
 
-    async othersKeyStore(version:number, author:Buffer, key:Buffer, value:Buffer, timestamp:number,  counter:number, signature?:Buffer){
-        var d={
-            version,
-            author,
-            key,
-            value,
-            timestamp,
-            counter,
-            signature
-        };
-        this._innerStore(d);
-    }
-
     async ownKeyStore(author:Buffer, key:Buffer, value:Buffer){
-        var d={
-            author,
-            key,
-            value,
+        var d:IStorageValue={
+            author:author,
+            key:key,
+            value:value,
             timestamp:Date.now()
         };
         this._innerStore(d);
     }
 
-    _innerStore(d:any){
+    _innerStore(d:IStorageValue){
         var ks=d.key.toString('hex');
         var list=this._db.get(ks);
         if(!list){
@@ -57,26 +47,37 @@ export default class mockupStorage implements IStorage{
             this._db.set(ks,list);
         }
         for(let i=0;i<list.length;i++){
-            if (Buffer.compare(list[i].a,d.author)==0){
+            if (Buffer.compare(list[i].author,d.author)==0){
                 list.splice(i,1);
                 break;
             }
         }
         list.push(d);
         list.sort((a,b)=>{
-            return b.t,a.t
+            if (a.timestamp===undefined) return -1;
+            if (b.timestamp===undefined) return 1;
+            return (a.timestamp as number) - (b.timestamp as number);
         });        
     }
 
-    async retreive(key: Buffer, author: Buffer | null, page: number){
+    async retreiveAnyAuthor (key: Buffer, page: number) : Promise<IStorageValue[]>{
+        return this._retreive(key,null,page);
+    }
+
+    async retreiveAuthor (key: Buffer, author: Buffer) : Promise<IStorageValue|null>{
+        var v=await this._retreive(key,author,0);
+        return v?v[0]:null;
+    }
+
+    async _retreive(key: Buffer, author: Buffer | null, page: number):Promise<IStorageValue[]>{
         var ks=key.toString('hex');
         var list=this._db.get(ks);
-        var r:MessageEnvelope[]=[];
+        var r:IStorageValue[]=[];
         if (!list) return r;
         var i=0;
         var pc=page*PAGESIZE;
         for(var me of list){
-            if (author && Buffer.compare(author,me.a))
+            if (author && Buffer.compare(author,me.author))
                 continue;
             if (i>=pc)
                 r.push(me);
