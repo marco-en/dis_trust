@@ -45,7 +45,7 @@ enum MessageType{
  * c {number} - request/reply counter
  */
 
-export interface MessageEnvelope{
+interface MessageEnvelope{
 
     /** version */
     v:number, // VERSION
@@ -64,19 +64,23 @@ export interface MessageEnvelope{
 }
 
 
-export interface IStorageValue{
+export interface IStorageEntry{
     author:Buffer,
     key:Buffer,
     value:Buffer,
     timestamp:Number,
-    version?:Number,
-    counter?:Number,
-    signature?:Buffer
+    version:Number,
 }
+
+export interface ISignedStorageEntry{
+    entry:IStorageEntry,
+    signature:Buffer
+}
+
 
 export interface FindResult{
     peers:BasePeer[];
-    values:IStorageValue[];
+    values:ISignedStorageEntry[];
 }
 
 /**
@@ -86,10 +90,9 @@ export interface FindResult{
  */
 
 export interface IStorage{
-    storeMessageEnvelope:(me:MessageEnvelope)=>Promise<void>,
-    ownKeyStore:(author:Buffer, key:Buffer, value:Buffer)=>Promise<void>,
-    retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<IStorageValue|null>
-    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<IStorageValue[]>
+    storeSignedEntry:(me:ISignedStorageEntry)=>Promise<void>,
+    retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>
+    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<ISignedStorageEntry[]>
 }
 
 interface IPendingRequest{
@@ -145,7 +148,7 @@ export class BasePeer extends EventEmitter{
     async ping():Promise<boolean>{
         throw new Error("Abstract");
     }
-    async store(key:Buffer, value: Buffer,k:number):Promise<BasePeer[]|null>{
+    async store(entry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
         throw new Error("Abstract");
     }
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
@@ -169,9 +172,9 @@ class MeAsPeer extends BasePeer{
     async added(status:boolean):Promise<void> {
         
     }
-    async store(key:Buffer, value: Buffer,k:number):Promise<Peer[]|null>{
-        await this._peerFactory.storage.ownKeyStore(this.peerfactoryId,key,value);
-        return this._peerFactory.findClosestPeers(key,k)
+    async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
+        await this._peerFactory.storage.storeSignedEntry(signedentry);
+        return this._peerFactory.findClosestPeers(signedentry.entry.key,k)
     }
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
         var value=await this._peerFactory.storage.retreiveAuthor(key,author)
@@ -189,7 +192,7 @@ class MeAsPeer extends BasePeer{
             values:values
         }
     }
-    async findNode(nodeId:Buffer,k:number):Promise<Peer[]|undefined>{
+    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]|undefined>{
         var peers=this._peerFactory.findClosestPeers(nodeId,k);
         return peers;
     }
@@ -328,18 +331,13 @@ class Peer extends BasePeer  {
      * @returns list of peers
      */
 
-    async store(key:Buffer, value: Buffer,k:number):Promise<BasePeer[]|null>{
+    async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
         this._debug("store...");
         if (this._id==null)
             throw new Error("Peer not initialized");
-        await this._peerFactory.storage.ownKeyStore(
-            this._peerFactory.id,
-            key,
-            value
-        );
+
         var res=await this._requestToPeer({
-            key:key,
-            value:value,
+            entry:signedentry,
             k:k
         },MessageType.store);
         if (!res) return null;
@@ -350,8 +348,12 @@ class Peer extends BasePeer  {
 
     async _onStore(storeEnvelope:MessageEnvelope,){
         this._debug("_onStore...");
-        await this._peerFactory.storage.storeMessageEnvelope(storeEnvelope);
-        var ids=await this._onFindNodeInner(storeEnvelope.p.key,storeEnvelope.p.k)
+        var signedentry:ISignedStorageEntry=storeEnvelope.p.entry;
+        if(!this._peerFactory.verifyStorageEntry(signedentry)){
+            return this._abortPeer("receive fake storage entry");
+        }
+        await this._peerFactory.storage.storeSignedEntry(signedentry);
+        var ids=await this._onFindNodeInner(signedentry.entry.key,storeEnvelope.p.k)
         await this._replyToPeer({ids:ids},storeEnvelope);
         this._debug("_onStore done");
     }
@@ -419,7 +421,7 @@ class Peer extends BasePeer  {
         let ids=await this._onFindNodeInner(key,k);
         await this._replyToPeer({
             ids:ids,
-            values:[value]
+            values:value?[value]:[]
         },findValueMessage);
     }
 
@@ -1055,7 +1057,7 @@ export class PeerFactory{
         return r?r:null;
     }
 
-    findClosestPeers(key:Buffer,k:number):Peer[]{
+    findClosestPeers(key:Buffer,k:number):BasePeer[]{
         return this._kbucket.closest(key,k) as any;
     }
 
@@ -1075,6 +1077,24 @@ export class PeerFactory{
 
     verify(msg:Buffer,signature:Buffer,author:Buffer):boolean{
         return sodium.verify(signature, msg, author);
+    }
+
+    createStorageEntry(key:Buffer,value:Buffer):ISignedStorageEntry{
+        var r:IStorageEntry={
+            author:this.id,
+            key:key,
+            value:value,
+            timestamp:Date.now(),
+            version:VERSION,            
+        }
+        return {
+            entry:r,
+            signature:this.sign(encode(r,MAXMSGSIZE))
+        };
+    }
+
+    verifyStorageEntry(signedentry:ISignedStorageEntry):boolean{
+        return this.verify(encode(signedentry.entry,MAXMSGSIZE),signedentry.signature,signedentry.entry.author);
     }
 
 }

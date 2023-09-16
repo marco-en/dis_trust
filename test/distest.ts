@@ -38,11 +38,6 @@ async function fn(){
     await dht.startUp();
 
 
-    var msg={
-        detailkey:"ciao",
-        payload:"Ok!!!"
-    }
-
 
     sk=Buffer.from(keys[2].sk,'hex');
     storage=new Storage(Debug("MockupStorage "+keys[2].pk.toString('hex').slice(0,6)));
@@ -58,17 +53,27 @@ async function fn(){
     
     console.log("dht2 startUp DONE");
 
+
+    var msg={
+        detailkey:"ciao",
+        payload:"Ok!!!"
+    }
+
     var key=sodium.sha(Buffer.from(msg.detailkey))
     var value=encode(msg,MAXMSGSIZE);
+
     console.log(value);
     dht.put(key,value);
 
     var res=await dht2.getAuthor(key,dht.id)
     console.log(res);
+
     var resseed=await dhtseed.getAuthor(key,dht.id);
     console.log(resseed);
+
     var resauth=await dht.getAuthor(key,dht.id);
     console.log(resauth);
+
 
 }
 

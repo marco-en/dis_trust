@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import { PeerFactory, IStorage, IStorageValue, BasePeer, MessageEnvelope } from './peer.js';
+import { PeerFactory, IStorage, ISignedStorageEntry, IStorageEntry, BasePeer } from './peer.js';
 import Debug from 'debug';
 import {encode,decode} from './encoder.js';
 
@@ -71,15 +71,22 @@ export class DisDHT {
      */
 
     async put(key: Buffer, value: Buffer):Promise<number> {
-        this._debug("put....")
+        this._debug("put....");
+
+
         if (!(key instanceof Buffer) || key.length!=KEYLEN)
             throw new Error("invalid key");
+
+        if (!(value instanceof Buffer) || key.length>MAXVALUESIZE)
+            throw new Error("invalid value");
+
+        var sse=this._peerFactory.createStorageEntry(key,value);
 
         var r=0;
 
         const callback=async (peer:BasePeer)=>{
             r++;
-            let peers= await peer.store(key,value,KPUT);
+            let peers= await peer.store(sse,KPUT);
             return peers;
         }
 
@@ -98,8 +105,8 @@ export class DisDHT {
      * @returns 
      */
 
-    async getAuthor(key: Buffer, author: Buffer):Promise<IStorageValue|null> {
-        var isv:IStorageValue|undefined;
+    async getAuthor(key: Buffer, author: Buffer):Promise<IStorageEntry|null> {
+        var isv:IStorageEntry|undefined;
 
         this._debug("getKeyAuthor....")
 
@@ -107,7 +114,7 @@ export class DisDHT {
             let fr=await peer.findValueAuthor(key,author,KGET);
             if (fr==null) return undefined;
             for (var v of fr.values)
-                if (isv===undefined || isv.timestamp<v.timestamp) isv=v;
+                if (isv===undefined || isv.timestamp<v.entry.timestamp) isv=v.entry;
             return fr.peers;
         }
 
@@ -232,4 +239,6 @@ export class DisDHT {
         this._debug("_closestNodesNavigator DONE");
         return r;
     }
+
+
 }

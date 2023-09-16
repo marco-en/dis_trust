@@ -1,96 +1,60 @@
 
 
-import { IStorage, IStorageValue, MessageEnvelope } from "../peer.js";
+import { IStorage, ISignedStorageEntry } from "../peer.js";
 import Debug from 'debug';
 
 const PAGESIZE=2;
 
-
-
-
-
 export default class mockupStorage implements IStorage{
 
-    _db:Map<string,IStorageValue[]>=new Map();
+    _db:Map<string,Map<string,ISignedStorageEntry>>=new Map();
     _debug:Debug.Debugger;
 
-    constructor(debug:Debug.Debugger){
-        this._debug=debug;
+    constructor(debug?:Debug.Debugger){
+        this._debug=debug || Debug("mockupStorage");
     }
 
-    async storeMessageEnvelope(me:MessageEnvelope){
-        this._debug(" mockupStorage.storeMessageEnvelope")
-        var d:IStorageValue={
-            version:me.v,
-            author:me.a,
-            key:me.p.key,
-            value:me.p.value,
-            timestamp:me.t,
-            counter:me.c,
-            signature:me.s
-        };
-        this._innerStore(d);        
-    }
-
-    async ownKeyStore(author:Buffer, key:Buffer, value:Buffer){
-        this._debug(" mockupStorage.ownKeyStore")
-        var d:IStorageValue={
-            author:author,
-            key:key,
-            value:value,
-            timestamp:Date.now()
-        };
-        this._innerStore(d);
-    }
-
-    _innerStore(d:IStorageValue){
-        var ks=d.key.toString('hex');
-        var list=this._db.get(ks);
-        if(!list){
-            list=[];
-            this._db.set(ks,list);
+    async storeSignedEntry(sse:ISignedStorageEntry){
+        this._debug(" mockupStorage.storeSignedEntry")
+        var skey=sse.entry.key.toString('hex');
+        var sauthor=sse.entry.author.toString('hex');
+        var m=this._db.get(skey);
+        if (!m) {
+            m=new Map();
+            this._db.set(skey,m);
         }
-        for(let i=0;i<list.length;i++){
-            if (Buffer.compare(list[i].author,d.author)==0){
-                list.splice(i,1);
-                break;
-            }
-        }
-        list.push(d);
-        list.sort((a,b)=>{
-            if (a.timestamp===undefined) return -1;
-            if (b.timestamp===undefined) return 1;
-            return (a.timestamp as number) - (b.timestamp as number);
-        });        
+        m.set(sauthor,sse);
     }
 
-    async retreiveAnyAuthor (key: Buffer, page: number) : Promise<IStorageValue[]>{
+
+    async retreiveAnyAuthor (key: Buffer, page: number) : Promise<ISignedStorageEntry[]>{
         this._debug(" mockupStorage.retreiveAnyAuthor")
-        return this._retreive(key,null,page);
-    }
-
-    async retreiveAuthor (key: Buffer, author: Buffer) : Promise<IStorageValue|null>{
-        this._debug(" mockupStorage.retreiveAuthor")
-        var v=await this._retreive(key,author,0);
-        return v?v[0]:null;
-    }
-
-    async _retreive(key: Buffer, author: Buffer | null, page: number):Promise<IStorageValue[]>{
-        var ks=key.toString('hex');
-        var list=this._db.get(ks);
-        var r:IStorageValue[]=[];
-        if (!list) return r;
+        if (page<0) throw new Error("negative page");
+        var skey=key.toString('hex');
+        var m=this._db.get(skey);
+        if(!m) return [];
+        var s=page*PAGESIZE;
         var i=0;
-        var pc=page*PAGESIZE;
-        for(var me of list){
-            if (author && Buffer.compare(author,me.author))
-                continue;
-            if (i>=pc)
-                r.push(me);
-            if (r.length==PAGESIZE)
-                break;
+        var r=[];
+        for(let e of m.values()){
+            if (i>s){
+                r.push(e);
+                if (r.length==PAGESIZE)
+                    break;
+            }
             i++;
         }
         return r;
-    };
+    }
+
+    async retreiveAuthor (key: Buffer, author: Buffer) : Promise<ISignedStorageEntry|null>{
+        this._debug(" mockupStorage.retreiveAuthor")
+        var skey=key.toString('hex');
+        var m=this._db.get(skey);
+        if(!m) return null;
+        var sauthor=author.toString('hex');
+        var r=m.get(sauthor);
+        return r?r:null;
+    }
+
 }
