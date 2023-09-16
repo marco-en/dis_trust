@@ -74,6 +74,34 @@ async function fn(){
     var resauth=await dht.getAuthor(key,dht.id);
     console.log(resauth);
 
+    
+    var msg2={
+        detailkey:"ciao",
+        payload:"hello"
+    }
+
+    var key2=sodium.sha(Buffer.from(msg.detailkey))
+    var value2=encode(msg2,MAXMSGSIZE);
+
+    console.log(value2);
+    dht2.put(key2,value2);
+
+    resauth=await dht.getAuthor(key,dht2.id);
+    console.log(resauth); 
+
+    resseed=await dhtseed.getAuthor(key,dht2.id);
+    console.log(resseed);
+    
+    res=await dht2.getAuthor(key,dht2.id)
+    console.log(res);
+
+    console.log("get all authors")
+    await dhtseed.get(key2,async entry=>{
+        console.log(entry);
+        return true;
+    })
+    console.log("DONE")
+
 
 }
 

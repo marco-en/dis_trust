@@ -1,8 +1,8 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import { PeerFactory, IStorage, ISignedStorageEntry, IStorageEntry, BasePeer } from './peer.js';
+import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF } from './peer.js';
 import Debug from 'debug';
-import {encode,decode} from './encoder.js';
+
 
 const KEYLEN=32;
 const KPUT = 20;
@@ -127,46 +127,83 @@ export class DisDHT {
      * 
      * @param key 
      * @param author 
-     * @param found (messageEnvelope:MessageEnvelope) => Promise<boolean> called for each value found. retunr false if you want to stop getting values
+     * @param found (messageEnvelope:MessageEnvelope) => Promise<boolean> called for each value found. return false if you want to stop getting values
      */
 
-/*
-    async get(key: Buffer,found:(getOutput:GetOutput)=>Promise<boolean>) {
-        this._debug("get....")
 
+    async get(key: Buffer,found:(entry:IStorageEntry)=>Promise<boolean>) {
+        this._debug("get....");
+
+        var timestamp=Date.now();
+
+        interface authorRes{
+            res:IStorageEntry,
+            sent:boolean
+        }
+
+        var authorIdString2Res:Map<string,authorRes>=new Map();
         var peerIdString2Peer:Map<string,BasePeer>=new Map();
 
-        let go=true;
+        const sendResults=async ():Promise<boolean>=>{
+            let results=[];
+            let sent=false;
+            for(let ar of authorIdString2Res.values())
+                if(!ar.sent)
+                    results.push(ar);
+            results.sort((a,b)=>a.res.timestamp-b.res.timestamp);
+            for(let ar of results){
+                ar.sent=true;
+                if (!await found(ar.res))
+                    return false;
+                sent=true;
+            }
+            return sent;
+        }
+
+        const pushRes=(peer:BasePeer,res:IStorageEntry):boolean=>{
+            if (res.timestamp>=timestamp+MAX_TS_DIFF)
+                return false;
+            var authorIdString=res.author.toString('hex');
+            let prev=authorIdString2Res.get(authorIdString);
+            if (prev==null || prev.res.timestamp<res.timestamp){
+                authorIdString2Res.set(authorIdString,{res:res,sent:false});
+                peerIdString2Peer.set(peer.idString,peer);
+                return true;
+            }
+            else
+                return false;
+        }
 
         const callback=async (peer:BasePeer)=>{
-            peerIdString2Peer.set(peer.idString,peer);
             let fr=await peer.findValues(key,KGET,0);
-            if (fr==null) return null;
-            for(let v of fr.values){
-                if (go) go=await found(v);
-            }
-            return go?fr.peers:null;
+            if (fr==null) return [];
+            for(let res_signed of fr.values)
+                pushRes(peer,res_signed.entry);
+            return fr.peers;
         }
 
         await this._closestNodesNavigator(key,KGET,callback);
-        if (!go) return;
 
         let page=0;
         while(peerIdString2Peer.size){
+            if (!await sendResults()) 
+                return;
             page++;
+            let peerIdStringToDelete=[];
             for (let [peerIdString,peer] of peerIdString2Peer.entries()){
+                let peerpush=false;
                 let fr=await peer.findValues(key,KGET,page);
-                if (fr==null || fr.values.length==0){
-                    peerIdString2Peer.delete(peerIdString);
-                }else{
-                    for (let v of fr.values){
-                        if (!await found(v)) return;     
-                    }
+                if (fr!=null){
+                    for (let v of fr.values)
+                        if(pushRes(peer,v.entry))
+                        peerpush=true;
                 }
+                if (!peerpush) peerIdStringToDelete.push(peerIdString);
             }
+            for (let ids of peerIdStringToDelete) peerIdString2Peer.delete(ids);
         }
     }
-*/
+
    async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
         this._debug("_closestnodes.....");
 
@@ -212,67 +249,5 @@ export class DisDHT {
         var r=kb.closest(key,k);
         return r as any;
     }
-
-/*
-    async _closestNodesNavigator_old(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null|undefined>): Promise<BasePeer[]> {
-        this._debug("_closestNodesNavigator.....");
-        if (k<1) throw new Error("Invalid K");
-
-        interface closenode{
-            peer:BasePeer,
-            queried:boolean,
-        }
-        var closenodes:closenode[]=[];
-
-        for (let c of this._kbucket.closest(key)) {
-            closenodes.push({
-                peer:c as any,
-                queried:false
-            })
-        }
-        this._debug("_closestnodes start with %d",closenodes.length);
-
-        const addCloseNode=(np:BasePeer)=>{
-            for (let cn of closenodes){
-                if (Buffer.compare(np.id as Buffer,cn.peer.id as Buffer)==0)
-                    return;
-            }
-            closenodes.unshift({
-                peer:np,
-                queried:false
-            });
-        }
-
-        var go_on=true;
-        while(go_on){
-            closenodes.sort((a,b)=>{
-                let da=Kbucket.distance(a.peer.id as Buffer,key);
-                let db=Kbucket.distance(a.peer.id as Buffer,key);
-                return da-db;
-            });
-
-            let queriedNodes=0;
-            go_on=false;
-            for(let i=0;i<closenodes.length && queriedNodes<k;i++){
-                if(closenodes[i].queried) continue;
-                go_on=true;
-                closenodes[i].queried=true;
-                let newPeers=await callback(closenodes[i].peer);
-                if (newPeers==null) break; // stop the nevigation
-                if (!(newPeers===undefined) && newPeers.length){
-                    queriedNodes++;
-                    for (let np of newPeers){
-                        addCloseNode(np)
-                    }
-                }
-            }
-            while (closenodes.length>k*2) closenodes.pop();
-        }
-        while (closenodes.length>k) closenodes.pop();
-        let r=closenodes.map(v=>v.peer);
-        this._debug("_closestNodesNavigator DONE");
-        return r;
-    }
-*/
 
 }

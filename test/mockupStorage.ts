@@ -37,7 +37,7 @@ export default class mockupStorage implements IStorage{
         var i=0;
         var r=[];
         for(let e of m.values()){
-            if (i>s){
+            if (s<=i){
                 r.push(e);
                 if (r.length==PAGESIZE)
                     break;

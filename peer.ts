@@ -11,7 +11,7 @@ import {encode,decode} from './encoder.js'
 
 
 const DEBUG=1;
-const MAX_TS_DIFF=DEBUG*5*60000+2*60*1000;
+export const MAX_TS_DIFF=DEBUG*5*60000+2*60*1000;
 const REPLYTIMEOUT=DEBUG*60000+5000;
 const VERSION=1;
 const INTRODUCTIONTIMEOUT=DEBUG*60000+2*1000;
@@ -68,8 +68,8 @@ export interface IStorageEntry{
     author:Buffer,
     key:Buffer,
     value:Buffer,
-    timestamp:Number,
-    version:Number,
+    timestamp:number,
+    version:number,
 }
 
 export interface ISignedStorageEntry{
