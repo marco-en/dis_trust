@@ -101,7 +101,7 @@ interface IPendingRequest{
     created:number,   
 }
 
-export class BasePeer extends EventEmitter{
+export class BasePeer extends EventEmitter implements Contact{
     static peerCnt=0;
     _peerFactory:PeerFactory;
     _factoryDebug:Debug.Debugger;
@@ -123,9 +123,10 @@ export class BasePeer extends EventEmitter{
         this._factoryDebug.call(this,format,...params)
     }
 
-    get id():Buffer|null{
+    get id():Buffer{
         throw new Error("Abstract");
     }
+    get vectorClock() {return 0};
     get idString():string{
         var x=this.id;
         if (x==null) return "";
@@ -157,13 +158,13 @@ export class BasePeer extends EventEmitter{
     async findValues(key:Buffer,k:number,page:number):Promise<FindResult|null>{
         throw new Error("Abstract");
     }
-    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]|undefined>{
+    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
         throw new Error("Abstract");
     }
 }
 
 class MeAsPeer extends BasePeer{
-    get id():Buffer|null{
+    get id():Buffer{
         return this._peerFactory.id;
     }
     async ping():Promise<boolean>{
@@ -192,7 +193,7 @@ class MeAsPeer extends BasePeer{
             values:values
         }
     }
-    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]|undefined>{
+    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
         var peers=this._peerFactory.findClosestPeers(nodeId,k);
         return peers;
     }
@@ -236,7 +237,7 @@ class Peer extends BasePeer  {
             return this._nickName;
     }
 
-    get vectorClock() {return 0};
+
 
     startUp():Promise<unknown>{
         if (this._startStatus) return Promise.resolve();
@@ -365,14 +366,14 @@ class Peer extends BasePeer  {
      * @returns 
      */
 
-    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]|undefined>{
+    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
         if (this._id==null)
             throw new Error("Peer not initialized");
         var nodesMessage=await this._requestToPeer({
             n:nodeId,
             k:k
         },MessageType.findnode);
-        if (!nodesMessage) return;
+        if (nodesMessage==null) return [];
         var nodesIds:Buffer[]=nodesMessage.p.ids;
         return await this._nodeids2peers(nodesIds);
     }
@@ -993,7 +994,7 @@ export class PeerFactory{
                     p = await (peer as any).ping();
                 } catch (err) { }
                 if (!p) {
-                    this._kbucket.remove(peer as any);
+                    this._kbucket.remove(peer.id);
                     if (!added){
                         this._kbucket.add(aNewPeer);
                         added=true;
@@ -1022,7 +1023,7 @@ export class PeerFactory{
             }
         });
         this._meAsPeer=new MeAsPeer(this);
-        this._kbucket.add(this._meAsPeer as any);
+        this._kbucket.add(this._meAsPeer);
     }
 
     get MyselfPeer():BasePeer{
@@ -1051,7 +1052,7 @@ export class PeerFactory{
 
     findPeerById(id:Buffer):BasePeer|null{
         if (Buffer.compare(id,this.id)==0) return this.MyselfPeer;
-        var r=this._kbucket.get(id) as any;
+        var r:BasePeer|null|undefined=this._kbucket.get(id) as any;
         if (r) return r;
         r=this._outofbucket.get(id.toString('hex'));
         return r?r:null;

@@ -106,21 +106,21 @@ export class DisDHT {
      */
 
     async getAuthor(key: Buffer, author: Buffer):Promise<IStorageEntry|null> {
-        var isv:IStorageEntry|undefined;
+        var isv:IStorageEntry|null=null;
 
         this._debug("getKeyAuthor....")
 
         const callback=async (peer:BasePeer)=>{
             let fr=await peer.findValueAuthor(key,author,KGET);
-            if (fr==null) return undefined;
+            if (fr==null) return null;
             for (var v of fr.values)
-                if (isv===undefined || isv.timestamp<v.entry.timestamp) isv=v.entry;
+                if (isv===null || isv.timestamp<v.entry.timestamp) isv=v.entry;
             return fr.peers;
         }
 
         await this._closestNodesNavigator(key,KGET,callback);
     
-        return isv?isv:null;
+        return isv;
     }
 
     /**
@@ -180,7 +180,41 @@ export class DisDHT {
         return r;
     }
 
-    async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null|undefined>): Promise<BasePeer[]> {
+    async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null>): Promise<BasePeer[]> {
+        this._debug("_closestNodesNavigator.....");
+        if (k<1) throw new Error("Invalid K");
+        var query:Map<String,boolean>=new Map();
+        var kb=new Kbucket({localNodeId:key,numberOfNodesPerKBucket:k});
+        for (let c of this._kbucket.closest(key,KGET)) kb.add(c);
+        var go_on=true;
+        while(go_on){
+            go_on=false;
+            for (let c of kb.closest(key,k)){
+                var p:BasePeer=c as any;
+                var ids=p.id.toString('hex');
+                if (query.get(ids))
+                    continue;
+                let bps:BasePeer[]|null;
+                bps=await callback(p);
+                query.set(ids,true);
+                if (bps==null)
+                {
+                    go_on=false;
+                    break;
+                }
+                for (let bp of bps){
+                    kb.add(bp);
+                    go_on=true;
+                    break;
+                }
+            }
+        }
+        var r=kb.closest(key,k);
+        return r as any;
+    }
+
+/*
+    async _closestNodesNavigator_old(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null|undefined>): Promise<BasePeer[]> {
         this._debug("_closestNodesNavigator.....");
         if (k<1) throw new Error("Invalid K");
 
@@ -239,6 +273,6 @@ export class DisDHT {
         this._debug("_closestNodesNavigator DONE");
         return r;
     }
-
+*/
 
 }
