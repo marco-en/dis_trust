@@ -10,6 +10,7 @@ enum ET{
     null,
     true,
     false,
+    undefined,
     number,
     string,
     array,
@@ -136,6 +137,9 @@ function _go(obj:any,sb:BufferWriter){
         case "string":
             _goString(obj as string,sb);
             return;
+        case "undefined":
+            sb.writeByte(ET.undefined);
+            return;
         case "object":
             if (obj==null)
                 sb.writeByte(ET.null);
@@ -258,6 +262,8 @@ function _dec(br:BufferReader):any{
             return nb.readDoubleLE();
         case ET.string:
             return readString(br);
+        case ET.undefined:
+            return undefined;
         case ET.array:
             return readArray(br);   
         case ET.null:

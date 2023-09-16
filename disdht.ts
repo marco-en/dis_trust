@@ -32,9 +32,7 @@ export class DisDHT {
         this._opt = opt;
 
         this._peerFactory = new PeerFactory(opt.storage, opt.secretKey);
-        this._peerFactory.on('peer', peer => {
-            this._onNewPeer(peer)
-        })
+
 
         this._debug=opt.debug || Debug("DisDHT     :"+this._peerFactory.id.toString('hex').slice(0,6));
         this._debug.color=this._peerFactory.debug.color;
@@ -46,15 +44,7 @@ export class DisDHT {
         return this._peerFactory.id;
     }
 
-    _onNewPeer(peer: BasePeer) {
-        try{
-            if (peer.id == null) throw new Error("_onNewPeer is null")
-            this._kbucket.add(peer as any);
-            this._debug("_onNewPeer done")
-        }catch(err){
-            this._debug("_onNewPeer FAILED %O",err);
-        }
-    }
+
 
     async startUp() {
         this._debug("Startup...")
@@ -80,12 +70,10 @@ export class DisDHT {
      * @returns number of Nodes in which it was saved
      */
 
-    async put(key: Buffer, value: any):Promise<number> {
+    async put(key: Buffer, value: Buffer):Promise<number> {
         this._debug("put....")
         if (!(key instanceof Buffer) || key.length!=KEYLEN)
             throw new Error("invalid key");
-
-        value=encode(value,MAXVALUESIZE);
 
         var r=0;
 
@@ -175,8 +163,8 @@ export class DisDHT {
    async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
         this._debug("_closestnodes.....");
 
-        const callback=(peer:BasePeer)=>{
-            return peer.findNode(key,k);
+        const callback=async (peer:BasePeer)=>{
+            return await peer.findNode(key,k);
         }
 
         var r=await this._closestNodesNavigator(key,k,callback);

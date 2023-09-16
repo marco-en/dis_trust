@@ -1,6 +1,7 @@
 
 
 import { IStorage, IStorageValue, MessageEnvelope } from "../peer.js";
+import Debug from 'debug';
 
 const PAGESIZE=2;
 
@@ -11,25 +12,28 @@ const PAGESIZE=2;
 export default class mockupStorage implements IStorage{
 
     _db:Map<string,IStorageValue[]>=new Map();
+    _debug:Debug.Debugger;
 
-    constructor(){
-
+    constructor(debug:Debug.Debugger){
+        this._debug=debug;
     }
 
     async storeMessageEnvelope(me:MessageEnvelope){
+        this._debug(" mockupStorage.storeMessageEnvelope")
         var d:IStorageValue={
             version:me.v,
             author:me.a,
             key:me.p.key,
             value:me.p.value,
             timestamp:me.t,
-            counter:me.t,
+            counter:me.c,
             signature:me.s
         };
         this._innerStore(d);        
     }
 
     async ownKeyStore(author:Buffer, key:Buffer, value:Buffer){
+        this._debug(" mockupStorage.ownKeyStore")
         var d:IStorageValue={
             author:author,
             key:key,
@@ -61,10 +65,12 @@ export default class mockupStorage implements IStorage{
     }
 
     async retreiveAnyAuthor (key: Buffer, page: number) : Promise<IStorageValue[]>{
+        this._debug(" mockupStorage.retreiveAnyAuthor")
         return this._retreive(key,null,page);
     }
 
     async retreiveAuthor (key: Buffer, author: Buffer) : Promise<IStorageValue|null>{
+        this._debug(" mockupStorage.retreiveAuthor")
         var v=await this._retreive(key,author,0);
         return v?v[0]:null;
     }

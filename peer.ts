@@ -6,13 +6,15 @@ import wrtc from 'wrtc';
 import * as sodium from './mysodium.js';
 import Debug from 'debug';
 import KBucket from 'k-bucket';
+import {Contact} from 'k-bucket';
 import {encode,decode} from './encoder.js'
 
 
-const MAX_TS_DIFF=2*60*1000;
-const REPLYTIMEOUT=60*1000;
+const DEBUG=1;
+const MAX_TS_DIFF=DEBUG*5*60000+2*60*1000;
+const REPLYTIMEOUT=DEBUG*60000+5000;
 const VERSION=1;
-const INTRODUCTIONTIMEOUT=2*1000;
+const INTRODUCTIONTIMEOUT=DEBUG*60000+2*1000;
 const KBUCKETSIZE=20;
 const MAXMSGSIZE=1024*1024;
 
@@ -99,7 +101,6 @@ interface IPendingRequest{
 export class BasePeer extends EventEmitter{
     static peerCnt=0;
     _peerFactory:PeerFactory;
-
     _factoryDebug:Debug.Debugger;
     _debugPrefix:string;
 
@@ -127,6 +128,11 @@ export class BasePeer extends EventEmitter{
         if (x==null) return "";
         else return x.toString('hex');
     }
+
+    get nickName():string{
+        throw new Error("Abstract");
+    }
+
     get peerfactoryId():Buffer{
         return this._peerFactory.id;
     }
@@ -187,6 +193,9 @@ class MeAsPeer extends BasePeer{
         var peers=this._peerFactory.findClosestPeers(nodeId,k);
         return peers;
     }
+    get nickName():string{
+        return "MeAsPeer";
+    }
 }
 
 
@@ -196,13 +205,20 @@ class Peer extends BasePeer  {
     _seen:number;
     _reqCnt:number=1;
     _pendingRequest=new Map<number,IPendingRequest>;
-    _introStatus=2;
     _decrypto_pk:Buffer|null=null;
     _decrypto_sk:Buffer|null=null;
     _encrypto_pk:Buffer|null=null;
-    _timeout:any;
     _added:boolean=true;
     _otherAdded:boolean=true;
+    _nickName:string|undefined;
+    _resolveIntroduction:any;
+    _startStatus:boolean=false;
+
+    constructor(peerFactory:PeerFactory,_nickName?:string){
+        super(peerFactory);
+        this._nickName=_nickName;
+        this._created=this._seen=Date.now();
+    }
 
     get id():Buffer{
         if (this._id==null)
@@ -210,57 +226,53 @@ class Peer extends BasePeer  {
         return this._id;
     }
 
-    get vectorClock() {return 0};
-
-    constructor(peerFactory:PeerFactory){
-        super(peerFactory);
-        this._created=this._seen=Date.now();
-
-        this._timeout=setTimeout(()=>{
-            if(this._introStatus)
-            {
-                this.emit('error','introduction timeout');
-                this.destroy();
-            }
-        },
-        INTRODUCTIONTIMEOUT);
+    get nickName():string{
+        if (this._nickName===undefined)
+            return "["+this.idString.slice(0,6)+"]";
+        else
+            return this._nickName;
     }
 
-    _introduceMyself(){
-        var {pk,sk}=sodium.crypto_box_seed_keypair();
-        this._decrypto_pk=pk;
-        this._decrypto_sk=sk;
-        var intro=this._packRequest({pk:pk},MessageType.introduce,0);
-        this._sendMsg(intro)
-        .then(()=>{
-            this.__intro();
+    get vectorClock() {return 0};
+
+    startUp():Promise<unknown>{
+        if (this._startStatus) return Promise.resolve();
+        var timeout:any;
+        return new Promise((resolve,reject)=>{
+            var {pk,sk}=sodium.crypto_box_seed_keypair();
+            this._decrypto_pk=pk;
+            this._decrypto_sk=sk;
+            var intro=this._packRequest({pk:pk},MessageType.introduce,0);        
+            resolve(this._sendMsg(intro))
+        }).then(()=>{
+            if (this._id) 
+                return; // already received introduction;
+            else
+                return new Promise((resolve,reject)=>{
+                    this._resolveIntroduction=resolve;
+                    timeout=setTimeout(()=>reject("Introduction timeout"),INTRODUCTIONTIMEOUT);
+                });
+        }).then(()=>{
+            if (timeout) clearTimeout(timeout);
+            this._startStatus=true;
+            this._peerFactory.newPeer(this);
         })
         .catch(err=>{
-            this._debug("cannot send introduction "+err);
-            this.destroy();
+            this._abortPeer("failed introduction "+err)
         })
     }
 
     _onIntroduction(introEnvelope:MessageEnvelope){
-        if (this._id!=null) {
+        if (this._id!=null || this._encrypto_pk!=null) {
             return this._abortPeer("received double introduction");
         }
         this._id=introEnvelope.a;
-        this._debugPrefix=this._debugPrefix+" <"+this.idString.slice(0,6)+"> "
+        this._debugPrefix=this._debugPrefix+" <"+this.nickName+"> "
         this._debug("received introduction");
         this._encrypto_pk=introEnvelope.p.pk;
-        this.__intro();
-    }
-
-    __intro(){
-        this._introStatus--;
-        if(this._introStatus==0){
-            clearTimeout(this._timeout);
-            this._debug("ready");
-            this.emit('ready');
-        }else if (this._introStatus<0){
-            this._debug("duplicate introduction ");
-            this.destroy();
+        if (this._resolveIntroduction) { // resolve the startup introduction
+            this._resolveIntroduction();
+            delete this._resolveIntroduction;
         }
     }
 
@@ -363,21 +375,6 @@ class Peer extends BasePeer  {
         return await this._nodeids2peers(nodesIds);
     }
 
-    async _nodeids2peers(ids:Buffer[]):Promise<BasePeer[]>{
-        var nodesIds:Buffer[]=ids;
-        var r:BasePeer[]=[];
-        for(var nodeid of nodesIds){
-            if (Buffer.compare(nodeid,this._peerFactory.id)==0)
-                continue;
-            var p=this._peerFactory.findPeerById(nodeid)
-            if (p)
-                r.push(p);
-            else{
-                r.push(await this._signalConnect(nodeid));
-            }
-        }
-        return r;
-    }
 
     async _onFindNode(findNodeEnvelope:MessageEnvelope){
         var nodesIds=await this._onFindNodeInner(findNodeEnvelope.p.n,findNodeEnvelope.p.k)
@@ -463,34 +460,61 @@ class Peer extends BasePeer  {
         },findValueMessage);
     }
 
+
+    async _nodeids2peers(ids:Buffer[]):Promise<BasePeer[]>{
+        var r:BasePeer[]=[];
+        for(var nodeid of ids){
+            if (Buffer.compare(nodeid,this.id)==0)
+                r.push(this)
+            else{
+                var p=this._peerFactory.findPeerById(nodeid)
+                if (p)
+                    r.push(p);
+                else{
+                    r.push(await this._signalConnect(nodeid));
+                }
+            }
+        }
+        return r;
+    }
+
     _signalConnect(nodeid:Buffer):Promise<BasePeer>{
-        this._debug("_signalConnect...");
+        this._debug("_signalConnect to %s...",nodeid.toString('hex').slice(0,6));
         return new Promise((resolve,reject)=>{
             var simplePeer:SimplePeer.Instance|undefined;
             try{
-                if (Buffer.compare(nodeid,this.peerfactoryId)){
+                if (Buffer.compare(nodeid,this.peerfactoryId)==0){
+                    this._debug("_signalConnect to MyselfPeer DONE ");
                     return resolve(this._peerFactory.MyselfPeer);
                 };
                 simplePeer=new SimplePeer({initiator: true, trickle: false, wrtc: wrtc as any });
                 simplePeer.on('signal', async (data:any) => {
-                    this._debug("_signalConnect signal...");
+                    this._debug("_signalConnect initiator signal...");
                     var signaldata=JSON.stringify(data)
                     if (!simplePeer) return this._debug("_signalConnect signal with no simplePeer defined");
                     const me=await this._requestToPeer({
                         signalTo:nodeid, // node to connect
                         signalData:signaldata
                     },MessageType.signal)
-                    if (!me || !me.p || !me.p.s) {
+                    if (!me || !me.p ) {
                         simplePeer.emit('error','did not receive signal data');
                         return; 
                     }
-                    var signalEnvelope:MessageEnvelope=me.p.s;
+                    if(me.p.myself){
+                        simplePeer.emit('error','signalled myself');
+                        return;
+                    }
+                    if (!me.p.signalBack){
+                        simplePeer.emit('error','did not receive signal envelope');
+                        return;
+                    }
+                    var signalEnvelope:MessageEnvelope=me.p.signalBack;
                     if (!this._verifySignedMessageEnvelope(signalEnvelope) || !signalEnvelope.p || !signalEnvelope.p.s)
                     {
                         simplePeer.emit('error','receive invalid signal data');
                         return;
                     }
-                    if (Buffer.compare(signalEnvelope.a,nodeid)){ // this is not from the node i am looki for....
+                    if (Buffer.compare(signalEnvelope.a,nodeid)){ // this is _peerFactory.newPeernot from the node i am looking for....
                         simplePeer.emit("fake answer");
                         this._abortPeer("sent a fake signal data")
                         return;
@@ -500,19 +524,17 @@ class Peer extends BasePeer  {
                 simplePeer.on('connect',()=>{
                     this._debug("_signalConnect connect...");
                     if (!simplePeer) return this._debug("_signalConnect signal with no simplePeer defined");
-                    let r=new VerySimplePeer(this._peerFactory,simplePeer);
-                    r.on('ready',()=>{
-                        if (r.id==null)
-                            return reject("Node has no id!")
-                        if (Buffer.compare(nodeid,r.id))
-                            return reject("Did not receive the right node!");
-                        this._debug("_signalConnect DONE...");
+                    let r=new VerySimplePeer(this._peerFactory,simplePeer,nodeid);
+                    r.startUp()
+                    .then(()=>{
                         resolve(r);
                     })
-                    r.on('error',reject)
+                    .catch(err=>{
+                        reject(err);
+                    })
                 })
                 simplePeer.on('error',(err:any)=>{
-                    this._debug("_signalConnect error...");
+                    this._debug("_signalConnect error %s...",err);
                     reject(err);
                     if (!(simplePeer===undefined) && !simplePeer.closed) simplePeer.destroy();
                 })
@@ -526,20 +548,38 @@ class Peer extends BasePeer  {
     }
 
     async _onRequestSignal(signalEnvelope:MessageEnvelope){
-        var peerToCall=this._peerFactory.findPeerById(signalEnvelope.p.signalTo);
-        if (peerToCall==null){
-            return this._replyToPeer({},signalEnvelope); 
+        try{
+            this._debug("_onRequestSignal...")
+            var basePeerToCall=this._peerFactory.findPeerById(signalEnvelope.p.signalTo);
+            if (!basePeerToCall){
+                this._debug("_onRequestSignal... DONE could not find the peer")
+                return await this._replyToPeer({},signalEnvelope); 
+            }
+            if (basePeerToCall.idString==this._peerFactory.idString)
+            {
+                this._debug("_onRequestSignal... signalled MeAsPeer")
+                return await this._replyToPeer({myself:true},signalEnvelope); 
+            }
+            var peerToCall=basePeerToCall as Peer;
+            if (!peerToCall._requestToPeer)
+                throw new Error("Ma come e' possibile");
+            var signalback=await peerToCall._requestToPeer({
+                forwardedSignalEnvelope:signalEnvelope
+            },MessageType.signalled);
+            if (signalback==null){
+                this._debug("_onRequestSignal DONE with NO SIGNAL")
+                return await this._replyToPeer({},signalEnvelope); 
+            }
+            await this._replyToPeer({signalBack:signalback},signalEnvelope);
+            this._debug("_onRequestSignal DONE")
+        }catch(err){
+            this._debug("_onRequestSignal error "+err);
+            return await this._replyToPeer({},signalEnvelope); 
         }
-        var signalback=await peerToCall._requestToPeer({
-            forwardedSignalEnvelope:signalEnvelope
-        },MessageType.signalled);
-        if (signalback==null){
-            return this._replyToPeer({},signalEnvelope); 
-        }
-        await this._replyToPeer({s:signalback},signalEnvelope);
     }
 
     _onRequestSignalled(signalledEnvelope:MessageEnvelope):Promise<void>{
+        this._debug("_onRequestSignalled...");
         return new Promise(async (resolve,reject)=>{
             try{
                 var forwardedSignalEnvelope:MessageEnvelope=signalledEnvelope.p.forwardedSignalEnvelope;
@@ -557,19 +597,32 @@ class Peer extends BasePeer  {
                 var knownSimplePeer=this._peerFactory.findPeerById(nodeid)
                 if (knownSimplePeer!=null){
                     // he does not know me, I know him...
-                    this._debug("Received signal request from %s why???",nodeid.toString('hex').slice(6));
+                    this._debug("Received signal request from %s why???",nodeid.toString('hex').slice(0,6));
                     reject("he does not knows me i know him")
                     return;
                 }
                 var simplePeer=new SimplePeer({trickle: false, wrtc: wrtc as any});
                 simplePeer.on('signal',async (data:string)=>{
-                    var signalData=JSON.stringify(data)
-                    await this._replyToPeer({s:signalData},signalledEnvelope);
+                    try{
+                        var signalData=JSON.stringify(data);
+                        await this._replyToPeer({s:signalData},signalledEnvelope);
+                        this._debug("_onRequestSignalled signal back");
+                    }
+                    catch(err){
+                        simplePeer.emit('error',err);
+                    }
                 });
                 simplePeer.on('connect',()=>{
-                    var r=new VerySimplePeer(this._peerFactory,simplePeer);
-                    this._peerFactory.newPeer(r);
-                    resolve();
+                    this._debug("_onRequestSignalled connect");
+                    var r=new VerySimplePeer(this._peerFactory,simplePeer,nodeid);
+                    r.startUp()
+                    .then(()=>{
+                        resolve();
+                        this._debug("_onRequestSignalled DONE")
+                    })
+                    .catch(err=>{
+                        reject(err);
+                    })
                 })
                 simplePeer.on('error',err=>{
                     reject(err);
@@ -763,7 +816,6 @@ class PeerWebsocket extends Peer{
             else
                 this._abortPeer("wrong message data type");
         });
-        this._introduceMyself();
     }
 
     _sendMsg(msg:Buffer):Promise<void>{ // override
@@ -803,7 +855,10 @@ class PeerWebsocketClient extends PeerWebsocket{
                 client.connect('ws://'+address+'/');
                 client.once("connect",(connection)=>{
                     var r=new PeerWebsocketClient(peerFactory,connection);
-                    resolve(r);
+                    r.startUp()
+                    .then(()=>{
+                        resolve(r);
+                    })
                 });
                 client.once("connectFailed",(err)=>reject(err));
             }catch(err){
@@ -846,7 +901,10 @@ class PeerWebsocketListener extends EventEmitter{
                     this._webSocket=new WebSocket.server({ httpServer: this._httpServer, autoAcceptConnections:true});
                     this._webSocket.on("connect",async connection=>{
                         var p=new PeerWebsocketServer(this._peerFactory,connection);
-                        this.emit('peer',p);
+                        p.startUp()
+                        .catch(err=>{
+                            p._abortPeer("could not startup peer "+err);
+                        })
                     })
                     resolve();
                 });
@@ -860,9 +918,11 @@ class PeerWebsocketListener extends EventEmitter{
 
 class VerySimplePeer extends Peer{
     _simplePeer:SimplePeer.Instance;
+    _expectednodeid:Buffer;
 
-    constructor(peerFactory:PeerFactory,simplePeer:SimplePeer.Instance){
+    constructor(peerFactory:PeerFactory,simplePeer:SimplePeer.Instance, expectednodeid:Buffer){
         super(peerFactory);
+        this._expectednodeid=expectednodeid;
         this._simplePeer=simplePeer;
         this._simplePeer.on('data',async (data:Buffer)=>{
             await this._onMsg(data);
@@ -870,8 +930,10 @@ class VerySimplePeer extends Peer{
         this._simplePeer.on('error',err=>{
             this._abortPeer("VerySimplePeer on error "+err);
         })
-        this._introduceMyself();
+
+        this._debug("VerySimplePeer create, expecting nodeId %s",expectednodeid.toString('hex').slice(0,6));
     }
+
 
     _sendMsg(msg:Buffer):Promise<void>{
         return new Promise((resolve,reject)=>{
@@ -892,7 +954,7 @@ class VerySimplePeer extends Peer{
 }
 
 
-export class PeerFactory extends EventEmitter{
+export class PeerFactory{
     _secretKey:Buffer;
     id:Buffer;
     storage:IStorage;
@@ -902,9 +964,13 @@ export class PeerFactory extends EventEmitter{
     _meAsPeer:MeAsPeer;
     _outofbucket:Map<string,BasePeer>=new Map();
 
+    get idString():string{
+        return this.id.toString('hex');
+    }
+
 
     constructor(storage: IStorage,secretKey?:Buffer){
-        super();
+        //super();
         var r=sodium.keygen(secretKey);
         this._secretKey=r.sk;
         this.id=r.pk;
@@ -937,13 +1003,17 @@ export class PeerFactory extends EventEmitter{
         });
         this._kbucket.on('added',async contact=>{
             var peer:BasePeer=contact as any;
+            this._debug(" _kbucket added %s",peer.nickName);
             this._outofbucket.delete(peer.idString);
             await peer.added(true);
         });
         this._kbucket.on('removed',async contact=>{
             var peer:BasePeer=contact as any;
-            if(peer==this.MyselfPeer)
+            this._debug(" _kbucket removed %s",peer.nickName);
+            if(peer==this.MyselfPeer){
+                this._debug(" _kbucket removed meAsPeer! add again");
                 this._kbucket.add(contact);
+            }
             else{
                 await peer.added(false);
                 this._outofbucket.set(peer.idString,peer);
@@ -965,32 +1035,20 @@ export class PeerFactory extends EventEmitter{
         return this._debug;
     }
 
-    newPeer(peer:Peer):Promise<void>{
-        return new Promise((resolve,reject)=>{
-            const ready=()=>{
-                if (peer.id==null){
-                    console.log("peer.id null at ready event")
-                    return;
-                }
-                this._kbucket.add(peer as any);
-                this.emit('peer',peer);
-                resolve();
-            }
-    
-            peer.once('ready',ready);
-            peer.once('destroy',()=>{
-                this._kbucket.remove(peer.id);
-                this._outofbucket.delete(peer.idString);
-            })
-            peer.on('error',(err)=>{
-                this.removeListener('ready',ready);
-                this._debug("Error by peer "+err);
-                reject()
-            })    
+    newPeer(peer:Peer):void{
+        this._debug("newPeer %s",peer.nickName);
+        this._kbucket.add(peer as any);
+        peer.once('destroy',()=>{
+            this._kbucket.remove(peer.id);
+            this._outofbucket.delete(peer.idString);
         })
+        peer.on('error',(err)=>{
+            this._debug("Error by peer "+err);
+        })    
     }
 
-    findPeerById(id:Buffer):Peer|null{
+    findPeerById(id:Buffer):BasePeer|null{
+        if (Buffer.compare(id,this.id)==0) return this.MyselfPeer;
         var r=this._kbucket.get(id) as any;
         if (r) return r;
         r=this._outofbucket.get(id.toString('hex'));
@@ -1003,16 +1061,12 @@ export class PeerFactory extends EventEmitter{
 
     async createListener(port:number,host?:string):Promise<void>{
         var l=new PeerWebsocketListener(this);
-        l.on('peer',(peer)=>{
-            this.newPeer(peer);
-        })
         await l.startup(port,host);
         this._peerWebsocketListener.push(l);
     }
 
     async createClient(port:number,host:string):Promise<void>{
         var peer= await PeerWebsocketClient.fromConnectionToServer(this,host+":"+port)
-        await this.newPeer(peer);
     }
 
     sign(msg:Buffer):Buffer{

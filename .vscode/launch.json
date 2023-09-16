@@ -24,8 +24,8 @@
       {
         "type": "node",
         "request": "launch" ,
-        "name": "Launch index",
-        "program": "${workspaceFolder}/index.ts",
+        "name": "Launch make keys",
+        "program": "${workspaceFolder}/test/makekeys.ts",
         "preLaunchTask": "tsc: build - tsconfig.json",
         "outFiles": ["${workspaceFolder}/out/**/*.js"]
       }
