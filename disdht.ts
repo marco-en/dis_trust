@@ -2,12 +2,14 @@ import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
 import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF } from './peer.js';
 import Debug from 'debug';
+import {shaStream,crypto_hash_sha256_BYTES, sha} from './mysodium.js';
 
 
 const KEYLEN=32;
 const KPUT = 20;
 const KGET = KPUT*4;
 const MAXVALUESIZE=1024*1024;
+const STREAMCHUNKSIZE=100*1000;
 
 interface ServerIp {
     port: number,
@@ -94,6 +96,47 @@ export class DisDHT {
 
         this._debug("put done");
         return r;
+    }
+
+
+    /**
+     * Merkle tree algorithm
+     * a stream will be identified by a single hashcode
+     * hashcode depends on content only. 
+     * 
+     * @param blob blob to store in the DHT
+     * @returns buffer with infohash
+     */
+
+    async putStream(blob:Blob):Promise<Buffer>{
+        return Buffer.alloc(0);
+
+        const pushchunk=async(buffer:Buffer)=>{
+            var hash=sha(buffer);
+            //await putLeaf(hash,buffer);
+
+        }
+
+        var buffer=Buffer.alloc(0);
+
+        const push=async(bytes:Uint8Array)=>{
+            buffer=Buffer.concat([buffer,bytes]);
+            if (buffer.length>=STREAMCHUNKSIZE){
+                await pushchunk(buffer.subarray(0,STREAMCHUNKSIZE));
+                buffer=buffer.subarray(STREAMCHUNKSIZE);
+            }
+        }
+
+        let readableStream=blob.stream();
+        let reader=readableStream.getReader();
+        let chunk=await reader.read();
+        while(!chunk.done){
+            ///await push(chunk.value);
+        }
+        await reader.cancel();
+        await readableStream.cancel();
+        if (buffer.length) pushchunk(buffer);
+
     }
 
 

@@ -51,3 +51,9 @@ export function sha(input:Buffer){
   sodium.crypto_hash_sha256(output,input);
   return output;
 }
+
+export function shaStream():sodium.CryptoHashSha256Wrap{
+  return sodium.crypto_hash_sha256_instance();
+}
+
+export const crypto_hash_sha256_BYTES=sodium.crypto_hash_sha256_BYTES;

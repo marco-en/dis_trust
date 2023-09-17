@@ -23,6 +23,16 @@
       },
       {
         "type": "node",
+        "request": "launch",
+        "name": "Launch Merkle",
+        "program": "${workspaceFolder}/test/merkletest.ts",
+        "env": {"DEBUG":"*,-connect:*"},
+        "preLaunchTask": "tsc: build - tsconfig.json",
+      
+        "outFiles": ["${workspaceFolder}/out/**/*.js"]
+      },
+      {
+        "type": "node",
         "request": "launch" ,
         "name": "Launch make keys",
         "program": "${workspaceFolder}/test/makekeys.ts",

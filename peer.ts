@@ -83,6 +83,8 @@ export interface FindResult{
     values:ISignedStorageEntry[];
 }
 
+
+
 /**
  * @interface IStorage
  * @method{store} - store a message envelope, Key is messageEnvelope.p.key. Author is messageEnvelope.a.
@@ -90,8 +92,10 @@ export interface FindResult{
  */
 
 export interface IStorage{
+    //storeInfohash:(value:Buffer)=>Promise<Buffer>,
+    //retreiveInfohash:(infoHash:Buffer)=>Promise<Buffer>,
     storeSignedEntry:(me:ISignedStorageEntry)=>Promise<void>,
-    retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>
+    retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>,
     retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<ISignedStorageEntry[]>
 }
 
@@ -1097,6 +1101,9 @@ export class PeerFactory{
     verifyStorageEntry(signedentry:ISignedStorageEntry):boolean{
         return this.verify(encode(signedentry.entry,MAXMSGSIZE),signedentry.signature,signedentry.entry.author);
     }
+
+
+
 
 }
 

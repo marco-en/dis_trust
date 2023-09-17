@@ -63,7 +63,7 @@ async function fn(){
     var value=encode(msg,MAXMSGSIZE);
 
     console.log(value);
-    dht.put(key,value);
+    await dht.put(key,value);
 
     var res=await dht2.getAuthor(key,dht.id)
     console.log(res);
@@ -80,11 +80,11 @@ async function fn(){
         payload:"hello"
     }
 
-    var key2=sodium.sha(Buffer.from(msg.detailkey))
+    var key2=sodium.sha(Buffer.from(msg2.detailkey))
     var value2=encode(msg2,MAXMSGSIZE);
 
     console.log(value2);
-    dht2.put(key2,value2);
+    await dht2.put(key2,value2);
 
     resauth=await dht.getAuthor(key,dht2.id);
     console.log(resauth); 
@@ -103,6 +103,22 @@ async function fn(){
     console.log("DONE")
 
 
+    var msg3={
+        detailkey:"ciao",
+        payload:"non so"
+    }
+
+    var key3=sodium.sha(Buffer.from(msg3.detailkey))
+    var value3=encode(msg2,MAXMSGSIZE);
+
+    await dhtseed.put(key3,value3);
+
+    console.log("get all authors again")
+    await dht.get(key3,async entry=>{
+        console.log(entry);
+        return true;
+    })
+    console.log("DONE")
 }
 
 fn();
