@@ -1,5 +1,4 @@
 
-import * as sodium from "./mysodium.js";
 
 export interface IMerkleNode{
     infoHash:Buffer;

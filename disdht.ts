@@ -1,15 +1,20 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF } from './peer.js';
+import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF, IStorageMerkleNode } from './peer.js';
 import Debug from 'debug';
-import {shaStream,crypto_hash_sha256_BYTES, sha} from './mysodium.js';
+import { MerkleReader,MerkleWriter,IMerkleNode } from './merkle.js';
+import {sha} from './mysodium.js';
+import Semaphore from './semaphore.js';
 
+const TESTING=true;
 
-const KEYLEN=32;
 const KPUT = 20;
 const KGET = KPUT*4;
-const MAXVALUESIZE=1024*1024;
-const STREAMCHUNKSIZE=100*1000;
+const MAXVALUESIZE = 2*1024;
+const NODESIZE = TESTING ? 2*1000 : 100*1000;
+const HIGHLEVEL = 3*NODESIZE;
+const ZEROBUF=Buffer.alloc(0);
+
 
 interface ServerIp {
     port: number,
@@ -25,6 +30,7 @@ interface DisDHToptions {
 }
 
 export class DisDHT {
+    KEYLEN:number=sha(ZEROBUF).length;
     _opt: DisDHToptions;
     _peerFactory: PeerFactory;
     _kbucket: Kbucket;
@@ -75,8 +81,7 @@ export class DisDHT {
     async put(key: Buffer, value: Buffer):Promise<number> {
         this._debug("put....");
 
-
-        if (!(key instanceof Buffer) || key.length!=KEYLEN)
+        if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
             throw new Error("invalid key");
 
         if (!(value instanceof Buffer) || key.length>MAXVALUESIZE)
@@ -98,7 +103,6 @@ export class DisDHT {
         return r;
     }
 
-
     /**
      * Merkle tree algorithm
      * a stream will be identified by a single hashcode
@@ -108,37 +112,116 @@ export class DisDHT {
      * @returns buffer with infohash
      */
 
-    async putStream(blob:Blob):Promise<Buffer>{
-        return Buffer.alloc(0);
-
-        const pushchunk=async(buffer:Buffer)=>{
-            var hash=sha(buffer);
-            //await putLeaf(hash,buffer);
-
-        }
-
-        var buffer=Buffer.alloc(0);
-
-        const push=async(bytes:Uint8Array)=>{
-            buffer=Buffer.concat([buffer,bytes]);
-            if (buffer.length>=STREAMCHUNKSIZE){
-                await pushchunk(buffer.subarray(0,STREAMCHUNKSIZE));
-                buffer=buffer.subarray(STREAMCHUNKSIZE);
+    async putStream(readableStream:ReadableStream):Promise<Buffer>{   
+        const emit = async (n:IMerkleNode) => { 
+            let smn = this._peerFactory.createSignedMerkleNode(n);
+            const callback = async (peer:BasePeer) => {
+                await peer.storeMerkleNode(smn,KPUT);
+                return await peer.storeMerkleNode(smn,KPUT);
             }
+            await this._closestNodesNavigator(n.infoHash,KPUT,callback);
         }
-
-        let readableStream=blob.stream();
-        let reader=readableStream.getReader();
-        let chunk=await reader.read();
+        const mw = new MerkleWriter(emit,sha,NODESIZE);
+        let reader = readableStream.getReader();
+        let chunk = await reader.read();
         while(!chunk.done){
-            ///await push(chunk.value);
+            await mw.update(chunk.value);
+            chunk = await reader.read();
         }
         await reader.cancel();
-        await readableStream.cancel();
-        if (buffer.length) pushchunk(buffer);
-
+        return await mw.done();
     }
 
+    async _getMerkleNode(infoHash:Buffer):Promise<IStorageMerkleNode|undefined>{
+        var r:IStorageMerkleNode|undefined;
+        const callback=async (peer:BasePeer)=>{
+            let f=await peer.findMerkleNode(infoHash,KGET);
+            if (Array.isArray(f))   
+                return f;
+            r=f.entry;
+            return null;
+        } 
+        await this._closestNodesNavigator(infoHash,KGET,callback);
+        return r;
+    }
+
+    getStream(infoHash:Buffer):ReadableStream{
+
+        if (!(infoHash instanceof Buffer) || infoHash.length!=this.KEYLEN)
+            throw new Error("invalid key");
+
+        const high=new Semaphore(1);
+        const low=new Semaphore(0);
+        const msgbuffer:Buffer[]=[];
+        var msgbuffersize:number=0;
+        var done:boolean=false;
+        var error:Error|null=null;
+        var cancelled=false;
+
+        const emitchunk=async (msg:Buffer)=>{
+            if (cancelled) return;
+            if (msgbuffersize==0)
+                low.inc();
+            msgbuffer.push(msg);
+            msgbuffersize+=msg.length;
+            if (msgbuffersize>=HIGHLEVEL)                 
+                await high.dec();
+        };
+
+        const innerPull=(controller:ReadableStreamDefaultController)=>{
+            if (done){
+                controller.close();
+                return true;
+            }
+            if (error){
+                controller.error(error);
+                return true;
+            }
+            if (msgbuffersize){
+                let b=msgbuffer.shift();
+                if (!b) throw new Error();
+                msgbuffersize-=b.length;
+                if (msgbuffersize<HIGHLEVEL)
+                    high.inc();
+                controller.enqueue(b);
+                return true
+            }
+            return false;
+        }
+
+        const read=async (ih:Buffer)=>{
+            if (cancelled) return;
+            var r = await this._getMerkleNode(ih);
+            if (!r) return;
+            return r.node;
+        };
+
+        const mr=new MerkleReader(read,sha,emitchunk);
+        mr.check(infoHash)
+        .then(checkRes=>{
+            if(checkRes)
+                done=true;
+            else
+                error=new Error("stream corrupted");
+            low.zero();
+            high.zero();
+        })
+        .catch(err=>{
+            error=err;
+        })
+
+
+        return new ReadableStream({
+            async pull(controller) {     
+                if (innerPull(controller)) return;
+                await low.dec();
+                innerPull(controller);
+            },
+            async cancel(controller) {
+                cancelled=true;
+            }
+        });
+    }
 
     /**
      * 
@@ -149,9 +232,15 @@ export class DisDHT {
      */
 
     async getAuthor(key: Buffer, author: Buffer):Promise<IStorageEntry|null> {
-        var isv:IStorageEntry|null=null;
+        this._debug("getKeyAuthor....");
 
-        this._debug("getKeyAuthor....")
+        if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
+            throw new Error("invalid key");
+
+        if (!(author instanceof Buffer) || author.length!=this.KEYLEN)
+            throw new Error("invalid author");
+
+        var isv:IStorageEntry|null=null;
 
         const callback=async (peer:BasePeer)=>{
             let fr=await peer.findValueAuthor(key,author,KGET);
@@ -176,6 +265,9 @@ export class DisDHT {
 
     async get(key: Buffer,found:(entry:IStorageEntry)=>Promise<boolean>) {
         this._debug("get....");
+
+        if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
+            throw new Error("invalid key");
 
         var timestamp=Date.now();
 

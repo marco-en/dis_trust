@@ -1,6 +1,6 @@
 
 
-import { IStorage, ISignedStorageEntry } from "../peer.js";
+import { IStorage, ISignedStorageEntry,ISignedStorageMerkleNode } from "../peer.js";
 import Debug from 'debug';
 
 const PAGESIZE=2;
@@ -8,6 +8,7 @@ const PAGESIZE=2;
 export default class mockupStorage implements IStorage{
 
     _db:Map<string,Map<string,ISignedStorageEntry>>=new Map();
+    _merkle:Map<string,ISignedStorageMerkleNode>=new Map();
     _debug:Debug.Debugger;
 
     constructor(debug?:Debug.Debugger){
@@ -57,4 +58,16 @@ export default class mockupStorage implements IStorage{
         return r?r:null;
     }
 
+
+    async storeMerkleNode(snm:ISignedStorageMerkleNode){
+        if (!snm) 
+            throw new Error("invalid parameter");
+        this._merkle.set(snm.entry.node.infoHash.toString('hex'),snm);
+    }
+
+    async getMerkleNode(infoHash:Buffer):Promise<ISignedStorageMerkleNode|undefined>{
+        return this._merkle.get(infoHash.toString('hex'));
+    }
+
+    
 }

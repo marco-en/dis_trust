@@ -8,6 +8,8 @@ import Debug from 'debug';
 import KBucket from 'k-bucket';
 import {Contact} from 'k-bucket';
 import {encode,decode} from './encoder.js'
+import { IMerkleNode } from './merkle.js';
+
 
 
 const DEBUG=1;
@@ -34,6 +36,8 @@ enum MessageType{
     signal,
     signalled,
     add,
+    storemerkle,
+    findmerkle,
 }
 
 /**
@@ -72,11 +76,23 @@ export interface IStorageEntry{
     version:number,
 }
 
+
 export interface ISignedStorageEntry{
     entry:IStorageEntry,
     signature:Buffer
 }
 
+export interface IStorageMerkleNode{
+    author:Buffer,
+    node:IMerkleNode,
+    timestamp:number,
+    version:number,
+}
+
+export interface ISignedStorageMerkleNode{
+    entry:IStorageMerkleNode,
+    signature:Buffer,
+}
 
 export interface FindResult{
     peers:BasePeer[];
@@ -96,7 +112,9 @@ export interface IStorage{
     //retreiveInfohash:(infoHash:Buffer)=>Promise<Buffer>,
     storeSignedEntry:(me:ISignedStorageEntry)=>Promise<void>,
     retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>,
-    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<ISignedStorageEntry[]>
+    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<ISignedStorageEntry[]>,
+    storeMerkleNode:(snm:ISignedStorageMerkleNode)=>Promise<void>,
+    getMerkleNode:(infoHash:Buffer)=>Promise<ISignedStorageMerkleNode|undefined>,
 }
 
 interface IPendingRequest{
@@ -156,12 +174,19 @@ export class BasePeer extends EventEmitter implements Contact{
     async store(entry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
         throw new Error("Abstract");
     }
+    async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
+        throw new Error("Abstract");        
+    }
+    async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
+        throw new Error("Abstract");        
+    }
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
         throw new Error("Abstract");
     }
     async findValues(key:Buffer,k:number,page:number):Promise<FindResult|null>{
         throw new Error("Abstract");
     }
+
     async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
         throw new Error("Abstract");
     }
@@ -174,12 +199,20 @@ class MeAsPeer extends BasePeer{
     async ping():Promise<boolean>{
         return true;
     }
-    async added(status:boolean):Promise<void> {
-        
-    }
+    async added(status:boolean):Promise<void> { }
+
     async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
         await this._peerFactory.storage.storeSignedEntry(signedentry);
         return this._peerFactory.findClosestPeers(signedentry.entry.key,k)
+    }
+    async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
+        await this._peerFactory.storage.storeMerkleNode(signed);
+        return this._peerFactory.findClosestPeers(signed.entry.node.infoHash,k);   
+    }
+    async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
+        var mn=await this._peerFactory.storage.getMerkleNode(key);
+        if (mn) return mn;
+        return this._peerFactory.findClosestPeers(key,k);
     }
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<FindResult|null>{
         var value=await this._peerFactory.storage.retreiveAuthor(key,author)
@@ -240,8 +273,6 @@ class Peer extends BasePeer  {
         else
             return this._nickName;
     }
-
-
 
     startUp():Promise<unknown>{
         if (this._startStatus) return Promise.resolve();
@@ -361,6 +392,77 @@ class Peer extends BasePeer  {
         var ids=await this._onFindNodeInner(signedentry.entry.key,storeEnvelope.p.k)
         await this._replyToPeer({ids:ids},storeEnvelope);
         this._debug("_onStore done");
+    }
+
+    /**
+     * 
+     * @param signed 
+     * @param k 
+     * @return close nodes
+     */
+
+    async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
+        this._debug("storeMerkleNode...")
+        var res=await this._requestToPeer({
+            entry:signed,
+            k:k
+        },MessageType.storemerkle);
+        if (!res) return null;
+        var r=await this._nodeids2peers(res.p.ids);
+        this._debug("storeMerkleNode done");
+        return r;
+    }
+
+    async _onStoreMerkleNode(merkleMessage:MessageEnvelope){
+        this._debug("_onStoreMerkleNode ....");
+        var signed:ISignedStorageMerkleNode=merkleMessage.p.entry;
+        var k:number=merkleMessage.p.K;
+        await this._peerFactory.storage.storeMerkleNode(signed);
+        var ids=await this._onFindNodeInner(signed.entry.node.infoHash,k)
+        await this._replyToPeer({ids:ids},merkleMessage);
+        this._debug("_onStoreMerkleNode done");
+    }
+
+    /**
+     * 
+     * @param key 
+     * @param k 
+     */
+
+    async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
+        this._debug("findMerkleNode...");
+        var res=await this._requestToPeer({
+            key:key,
+            k:k
+        },MessageType.findmerkle);
+        if (res==null) return [];
+        var r;
+        if (res.p.ids) {
+            this._debug("findMerkleNode not found Node");
+            r=await this._nodeids2peers(res.p.ids);
+        }else if (res.p.node) {
+            this._debug("findMerkleNode found Node");
+            r=res.p.node;
+        }else{
+            await this._abortPeer("invalid reply");
+            r=[];
+        }
+        this._debug("findMerkleNode DONE");
+        return r;
+    }
+
+    async _onfindMerkleNode(findMerkle:MessageEnvelope){
+        this._debug("_onfindMerkleNode...");
+        var key:Buffer=findMerkle.p.key;
+        var k:number=findMerkle.p.k;
+        var mn=await this._peerFactory.storage.getMerkleNode(key);
+        if (mn===undefined){
+            var ids=await this._onFindNodeInner(key,k)
+            await this._replyToPeer({ids:ids},findMerkle);
+        }else{
+            await this._replyToPeer({node:mn},findMerkle);
+        }
+        this._debug("_onfindMerkleNode DONE");
     }
 
     /**
@@ -661,6 +763,10 @@ class Peer extends BasePeer  {
                 return await this._onRequestSignalled(requestEnvelope);
             case MessageType.add:
                 return await this._onAdded(requestEnvelope);
+            case MessageType.storemerkle:
+                return await this._onStoreMerkleNode(requestEnvelope);
+            case MessageType.findmerkle:
+                return await this._onfindMerkleNode(requestEnvelope);
         }
         await this._abortPeer("invalid message type");
     }
@@ -1102,7 +1208,22 @@ export class PeerFactory{
         return this.verify(encode(signedentry.entry,MAXMSGSIZE),signedentry.signature,signedentry.entry.author);
     }
 
+    createSignedMerkleNode(node:IMerkleNode):ISignedStorageMerkleNode{
+        var r:IStorageMerkleNode={
+            author:this.id,
+            node:node,
+            timestamp:Date.now(),
+            version:VERSION,            
+        }
+        return {
+            entry:r,
+            signature:this.sign(encode(r,MAXMSGSIZE))
+        }
+    }
 
+    verifySignedMerkleNode(signed:ISignedStorageMerkleNode):boolean{
+        return this.verify(encode(signed.entry,MAXMSGSIZE),signed.signature,signed.entry.author);
+    }
 
 
 }

@@ -13,8 +13,6 @@ async function fn(){
 
     let keys=JSON.parse(await fs.readFile("test/testkeys.json",{encoding:'utf-8'}));
 
-
-
     let sk=Buffer.from(keys[0].sk,'hex');
     let storage=new Storage(Debug("MockupStorage "+keys[0].pk.toString('hex').slice(0,6)));
     let dhtseed=new DisDHT({
@@ -117,8 +115,60 @@ async function fn(){
     await dht.get(key3,async entry=>{
         console.log(entry);
         return true;
-    })
-    console.log("DONE")
+    });
+
+
+    await testStream(dht,dht2);
+
+    console.log("DONE");
+}
+
+async function testStream(dht:DisDHT,dht2:DisDHT){
+
+    var aBlock=Buffer.alloc(12345);
+    for (let i=0;i<aBlock.length;i++) aBlock[i]=Math.random()*256;
+    var arr=[];
+    for (let i=0;i<60;i++) arr.push(aBlock);
+
+    var blob=new Blob(arr);
+    var streamHash=await dht.putStream(blob.stream());
+
+    console.log("putStream DONE ",streamHash.toString('hex'));
+
+    try{
+        var stream=dht2.getStream(streamHash);
+        if (!await comp(stream,blob.stream())){
+            console.log("failed");
+        }
+    }catch(err){
+        console.log(err);
+    }
+
+
+}
+
+
+async function comp(a:ReadableStream,b:ReadableStream){
+    var ra=a.getReader();
+    var rb=b.getReader();
+    var ma=await ra.read();
+    var mb=await rb.read();
+    var ia=0;
+    var ib=0;
+    while(!ma.done && !ma.done){
+        if (ia==ma.value.length){
+            ma=await ra.read();
+            ia=0;
+        }
+        if (ib==mb.value.length){
+            mb=await rb.read();
+            ib=0;
+        }
+        if (ma.done && ma.done) return true;
+        if (ma.done || ma.done) return false;
+        if (ma.value[ia++]!=mb.value[ib++]) return false;
+    }
+    return true;
 }
 
 fn();
