@@ -52,8 +52,6 @@ export class DisDHT {
         return this._peerFactory.id;
     }
 
-
-
     async startUp() {
         this._debug("Startup...")
         if (this._opt.servers)
@@ -159,6 +157,7 @@ export class DisDHT {
         var cancelled=false;
 
         const emitchunk=async (msg:Buffer)=>{
+            if (msg.length==0) return;
             if (cancelled) return;
             if (msgbuffersize==0)
                 low.inc();
@@ -209,7 +208,6 @@ export class DisDHT {
         .catch(err=>{
             error=err;
         })
-
 
         return new ReadableStream({
             async pull(controller) {     

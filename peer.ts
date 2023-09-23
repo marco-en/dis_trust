@@ -76,7 +76,6 @@ export interface IStorageEntry{
     version:number,
 }
 
-
 export interface ISignedStorageEntry{
     entry:IStorageEntry,
     signature:Buffer
@@ -92,6 +91,17 @@ export interface IStorageMerkleNode{
 export interface ISignedStorageMerkleNode{
     entry:IStorageMerkleNode,
     signature:Buffer,
+}
+
+export interface IUserId{
+    userId:string,
+    author:Buffer,
+    timestamp:number,
+}
+
+export interface ISignedUserId{
+    entry:IUserId,
+    signature:Buffer;
 }
 
 export interface FindResult{
@@ -186,7 +196,6 @@ export class BasePeer extends EventEmitter implements Contact{
     async findValues(key:Buffer,k:number,page:number):Promise<FindResult|null>{
         throw new Error("Abstract");
     }
-
     async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
         throw new Error("Abstract");
     }
@@ -416,6 +425,10 @@ class Peer extends BasePeer  {
     async _onStoreMerkleNode(merkleMessage:MessageEnvelope){
         this._debug("_onStoreMerkleNode ....");
         var signed:ISignedStorageMerkleNode=merkleMessage.p.entry;
+        if (!this._peerFactory.verifySignedMerkleNode(signed)){
+            this._abortPeer("invalid merkle node received");
+            return;
+        }
         var k:number=merkleMessage.p.K;
         await this._peerFactory.storage.storeMerkleNode(signed);
         var ids=await this._onFindNodeInner(signed.entry.node.infoHash,k)
@@ -443,6 +456,10 @@ class Peer extends BasePeer  {
         }else if (res.p.node) {
             this._debug("findMerkleNode found Node");
             r=res.p.node;
+            if(!this._peerFactory.verifySignedMerkleNode(r)){
+                await this._abortPeer("invalid signature in the reply");
+                r=[];                
+            }
         }else{
             await this._abortPeer("invalid reply");
             r=[];
@@ -525,6 +542,10 @@ class Peer extends BasePeer  {
         var author=findValueMessage.p.b;
         var k=findValueMessage.p.k;
         var value=await this._peerFactory.storage.retreiveAuthor(key,author);
+        if (value && !this._peerFactory.verifyStorageEntry(value)){
+            this._abortPeer("invalid signature");
+            return;
+        }
         let ids=await this._onFindNodeInner(key,k);
         await this._replyToPeer({
             ids:ids,
@@ -550,6 +571,12 @@ class Peer extends BasePeer  {
         }
         var me=await this._requestToPeer(q,MessageType.findvalueNoAuthor);
         if (!me) return null;
+        for(var se of me.p.values){
+            if(!this._peerFactory.verifyStorageEntry(se)){
+                this._abortPeer("invalid signature");
+                return null;
+            }
+        }
         var peers=await this._nodeids2peers(me.p.ids);
         return {
             peers:peers,
@@ -1225,6 +1252,22 @@ export class PeerFactory{
         return this.verify(encode(signed.entry,MAXMSGSIZE),signed.signature,signed.entry.author);
     }
 
+    createSignedUserName(userName:string):ISignedUserId{
+        var u:IUserId={
+            userId:userName,
+            author:this.id,
+            timestamp:Date.now()
+        }
+        return {
+            entry:u,
+            signature:this.sign(encode(u,MAXMSGSIZE))
+        }
+    }
+
+    verifySignedUserName(signeUSerId:ISignedUserId):boolean{
+        return true;
+    }
+    
 
 }
 
