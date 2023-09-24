@@ -27,6 +27,16 @@ export default class Semaphore{
             }
         })
     }
+
+    dec_cb(callback:any):void{
+        if(this._cnt>0){
+            this._cnt--;
+            callback();
+        }else{
+            this._resolveList.push(callback);
+        }        
+    }
+
     zero(){
         while(this._resolveList.length)
             this.inc();

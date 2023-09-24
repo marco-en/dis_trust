@@ -193,7 +193,8 @@ export class BasePeer extends EventEmitter implements Contact{
     get peerfactoryId():Buffer{
         return this._peerFactory.id;
     }
-    destroy(){
+    async destroy(){
+        this._debug("destroy");
         this.emit('destroy');
     }
     async added(status:boolean):Promise<void> {
@@ -411,12 +412,6 @@ class Peer extends BasePeer  {
         }
     }
 
-    destroy(){
-        this._debug("destroy");
-        this._id=null;
-        super.destroy();
-    }
-
     async added(status:boolean):Promise<void> {
         if (this._added) return;
         this._added=status;
@@ -436,7 +431,7 @@ class Peer extends BasePeer  {
     async _fullyRemoved():Promise<boolean>{
         if (this._added || this._otherAdded) return false;
         this._debug("fully removed");
-        this.destroy();
+        await this.destroy();
         return true;
     }
 
@@ -519,7 +514,7 @@ class Peer extends BasePeer  {
         var k:number=userIdMessage.p.k;
 
         if (!checkUserName(su.entry.userId)){
-            this._abortPeer("userIs");
+            this._abortPeer("invalid userId");
             return;
         }
 
@@ -842,10 +837,10 @@ class Peer extends BasePeer  {
                         reject(err);
                     })
                 })
-                simplePeer.on('error',(err:any)=>{
+                simplePeer.on('error',async (err:any)=>{
                     this._debug("_signalConnect error %s...",err);
                     reject(err);
-                    if (!(simplePeer===undefined) && !simplePeer.closed) simplePeer.destroy();
+                    if (!(simplePeer===undefined) && !simplePeer.closed) await simplePeer.destroy();
                 })
 
             }catch(err){
@@ -1115,6 +1110,7 @@ class Peer extends BasePeer  {
 
     async _abortPeer(msg:string){
         this._debug("Abort Peer %s",msg);
+        await this.destroy();
         this.emit('error',msg);
     }
 }
@@ -1132,6 +1128,12 @@ class PeerWebsocket extends Peer{
                 this._onMsg(message.binaryData);
             else
                 this._abortPeer("wrong message data type");
+        });
+        this._connection.once('close',async (reasonCode, description)=>{
+            await this.destroy();
+        });
+        this._connection.once('error',err=>{
+            this._abortPeer(" on.error "+err);
         });
     }
 
@@ -1151,11 +1153,11 @@ class PeerWebsocket extends Peer{
         })
     }
 
-    destroy(){
+    async destroy(){
         try{
             this._connection.close();
         }catch(err){}
-        super.destroy();
+        await super.destroy();
     }
 }
 
@@ -1247,6 +1249,9 @@ class VerySimplePeer extends Peer{
         this._simplePeer.on('error',err=>{
             this._abortPeer("VerySimplePeer on error "+err);
         })
+        this._simplePeer.on('close',async ()=>{
+            await this.destroy();
+        })
 
         this._debug("VerySimplePeer create, expecting nodeId %s",expectednodeid.toString('hex').slice(0,6));
     }
@@ -1264,10 +1269,13 @@ class VerySimplePeer extends Peer{
         })
     }
 
-    destroy() {
-        this._simplePeer.destroy();
-        super.destroy();
+    async destroy() {
+        try{
+            this._simplePeer.destroy();
+        }catch(err){};
+        await super.destroy();
     }
+
 }
 
 
@@ -1450,6 +1458,5 @@ export class PeerFactory{
         return this.verify(encode(signed.entry,MAXMSGSIZE),signed.signature,signed.entry.author)
     }
     
-
 }
 

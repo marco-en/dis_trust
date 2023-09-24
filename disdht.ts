@@ -5,7 +5,6 @@ import Debug from 'debug';
 import { MerkleReader,MerkleWriter,IMerkleNode } from './merkle.js';
 import {sha} from './mysodium.js';
 import Semaphore from './semaphore.js';
-import KBucket from 'k-bucket';
 
 const TESTING=true;
 
@@ -36,6 +35,7 @@ export class DisDHT {
     _peerFactory: PeerFactory;
     _kbucket: Kbucket;
     _debug:Debug.Debugger;
+    _startup:boolean=false;
 
     constructor(opt: DisDHToptions) {
         this._opt = opt;
@@ -55,6 +55,7 @@ export class DisDHT {
 
     async startUp() {
         this._debug("Startup...")
+
         if (this._opt.servers)
             for (var server of this._opt.servers)
                 await this._peerFactory.createListener(server.port, server.host)
@@ -66,11 +67,28 @@ export class DisDHT {
                     throw new Error("missing host name");
 
         await this._closestNodes(this._peerFactory.id, KPUT);
+        this._startup=true;
+
         this._debug("Startup done")
+    }
+
+    async shutdown(){
+        this._debug("shutdown...");
+        if (!this._startup) throw new Error("not started up");
+
+        for (var contact of this._kbucket.toArray()){
+            var peer=contact as BasePeer;
+            await peer.destroy();
+        }
+        this._startup=false;
+
+        this._debug("shutdown DONE");
     }
 
 
     async setUser(userId:string):Promise<boolean>{
+        this._debug("setUser...");
+        if (!this._startup) throw new Error("not started up");
         var falsecnt=0;
         var truecnt=0;
         var su=this._peerFactory.createSignedUserName(userId);
@@ -91,11 +109,17 @@ export class DisDHT {
 
         await this._closestNodesNavigator(su.entry.userHash,KPUT,callback);
 
-        return truecnt > 1 && truecnt > falsecnt;
+        var r=truecnt > 1 && truecnt > falsecnt
+        this._debug("setUser DONE "+r);
+        return r;
     }
 
     async getUser(userId:string):Promise<Buffer|null>{
+        this._debug("getUser...");    
+
+        if (!this._startup) throw new Error("not started up");
         const userHash=userIdHash(userId);
+
         interface EC{
             se:ISignedUserId,
             score:number
@@ -127,7 +151,9 @@ export class DisDHT {
                 maxscore=se.score
             }
         }
-        return r?r.entry.author:null;
+        var rr=r?r.entry.author:null;
+        this._debug("getUser DONE"+rr?.toString('hex'));
+        return rr;
     }
 
     /**
@@ -140,6 +166,7 @@ export class DisDHT {
 
     async put(key: Buffer, value: Buffer):Promise<number> {
         this._debug("put....");
+        if (!this._startup) throw new Error("not started up");
 
         if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
             throw new Error("invalid key");
@@ -159,7 +186,7 @@ export class DisDHT {
 
         await this._closestNodesNavigator(key,KPUT,callback);
 
-        this._debug("put done");
+        this._debug("put done "+r);
         return r;
     }
 
@@ -172,7 +199,10 @@ export class DisDHT {
      * @returns buffer with infohash
      */
 
-    async putStream(readableStream:ReadableStream):Promise<Buffer>{   
+    async putStream(readableStream:ReadableStream):Promise<Buffer>{  
+        this._debug("putStream....");
+
+        if (!this._startup) throw new Error("not started up");
         const emit = async (n:IMerkleNode) => { 
             let smn = this._peerFactory.createSignedMerkleNode(n);
             const callback = async (peer:BasePeer) => {
@@ -189,10 +219,13 @@ export class DisDHT {
             chunk = await reader.read();
         }
         await reader.cancel();
-        return await mw.done();
+        var r=await mw.done();
+        this._debug("putStream DONE");        
+        return r;
     }
 
     async _getMerkleNode(infoHash:Buffer):Promise<IStorageMerkleNode|undefined>{
+        if (!this._startup) throw new Error("not started up");
         var r:IStorageMerkleNode|undefined;
         const callback=async (peer:BasePeer)=>{
             let f=await peer.findMerkleNode(infoHash,KGET);
@@ -206,6 +239,7 @@ export class DisDHT {
     }
 
     getStream(infoHash:Buffer):ReadableStream{
+        if (!this._startup) throw new Error("not started up");
 
         if (!(infoHash instanceof Buffer) || infoHash.length!=this.KEYLEN)
             throw new Error("invalid key");
@@ -293,6 +327,7 @@ export class DisDHT {
 
     async getAuthor(key: Buffer, author: Buffer):Promise<IStorageEntry|null> {
         this._debug("getKeyAuthor....");
+        if (!this._startup) throw new Error("not started up");
 
         if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
             throw new Error("invalid key");
@@ -325,6 +360,7 @@ export class DisDHT {
 
     async get(key: Buffer,found:(entry:IStorageEntry)=>Promise<boolean>) {
         this._debug("get....");
+        if (!this._startup) throw new Error("not started up");
 
         if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
             throw new Error("invalid key");

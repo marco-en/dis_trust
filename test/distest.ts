@@ -136,6 +136,7 @@ async function fn(){
         console.log("could steal name");
     }
 
+    //await dht.shutdown();
     
     console.log("DONE");
 }
