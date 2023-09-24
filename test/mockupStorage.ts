@@ -1,6 +1,6 @@
 
 
-import { IStorage, ISignedStorageEntry,ISignedStorageMerkleNode } from "../peer.js";
+import { IStorage, ISignedStorageEntry,ISignedStorageMerkleNode,ISignedUserId } from "../peer.js";
 import Debug from 'debug';
 
 const PAGESIZE=2;
@@ -9,6 +9,7 @@ export default class mockupStorage implements IStorage{
 
     _db:Map<string,Map<string,ISignedStorageEntry>>=new Map();
     _merkle:Map<string,ISignedStorageMerkleNode>=new Map();
+    _users:Map<string,ISignedUserId>=new Map();
     _debug:Debug.Debugger;
 
     constructor(debug?:Debug.Debugger){
@@ -67,6 +68,25 @@ export default class mockupStorage implements IStorage{
 
     async getMerkleNode(infoHash:Buffer):Promise<ISignedStorageMerkleNode|undefined>{
         return this._merkle.get(infoHash.toString('hex'));
+    }
+
+   
+    async setUserId (signeUserId:ISignedUserId):Promise<boolean>{
+        var sh=signeUserId.entry.userHash.toString('hex');
+        var pv=this._users.get(sh);
+        if (pv){
+            if (Buffer.compare(signeUserId.signature,pv.signature))
+                return false; // try to change
+            else
+                return true; // same as before
+        }
+        this._users.set(sh,signeUserId);
+        return true; // set first time
+    }
+    
+    async getUserId(userHash:Buffer){
+        var sh=userHash.toString('hex');
+        return this._users.get(sh);
     }
 
     

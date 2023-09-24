@@ -120,6 +120,23 @@ async function fn(){
 
     await testStream(dht,dht2);
 
+    const userId="Marco"
+
+    if(!await dht.setUser(userId)){
+        console.log("failed to set userID");
+    }
+
+    var ub=await dht.getUser(userId);
+    if (ub==null) 
+        console.log("failed to get user");
+    else if (Buffer.compare(ub,dht.id))
+        console.log("got wrong user");
+
+    if(await dht2.setUser(userId)){
+        console.log("could steal name");
+    }
+
+    
     console.log("DONE");
 }
 

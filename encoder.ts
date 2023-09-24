@@ -35,7 +35,8 @@ class BufferWriter{
     _alloc(size:number):void{
         if(this._end+size<this._buffer.length) return;
         var ns=Math.min(this._buffer.length*2+size,this._maxSize);
-        if(this._end+size>=ns) throw new Error("buffer bigger than bigger size");
+        if(this._end+size>=ns) 
+            throw new Error("buffer bigger than bigger size");
         var nb=Buffer.alloc(ns);
         this._buffer.copy(nb);
         this._buffer=nb;

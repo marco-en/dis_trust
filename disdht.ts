@@ -1,10 +1,11 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF, IStorageMerkleNode } from './peer.js';
+import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF, IStorageMerkleNode, checkUserName, userIdHash, ISignedUserId } from './peer.js';
 import Debug from 'debug';
 import { MerkleReader,MerkleWriter,IMerkleNode } from './merkle.js';
 import {sha} from './mysodium.js';
 import Semaphore from './semaphore.js';
+import KBucket from 'k-bucket';
 
 const TESTING=true;
 
@@ -66,6 +67,67 @@ export class DisDHT {
 
         await this._closestNodes(this._peerFactory.id, KPUT);
         this._debug("Startup done")
+    }
+
+
+    async setUser(userId:string):Promise<boolean>{
+        var falsecnt=0;
+        var truecnt=0;
+        var su=this._peerFactory.createSignedUserName(userId);
+
+        const callback=async (peer:BasePeer)=>{
+            var r=await peer.setUserId(su,KPUT);
+            if (r==null) 
+                return [];
+            else if (!r) {
+                falsecnt++;
+                return [];
+            }
+            else{
+                truecnt++;
+                return r;
+            }
+        }
+
+        await this._closestNodesNavigator(su.entry.userHash,KPUT,callback);
+
+        return truecnt > 1 && truecnt > falsecnt;
+    }
+
+    async getUser(userId:string):Promise<Buffer|null>{
+        const userHash=userIdHash(userId);
+        interface EC{
+            se:ISignedUserId,
+            score:number
+        }
+        var author2cnt:Map<string,EC>=new Map();
+
+        const callback=async (peer:BasePeer)=>{
+            let r=await peer.getUserId(userHash,KGET);
+            if (r==null) return [];
+            if (r.value){
+                let sa=r.value.entry.author.toString('hex');
+                let ec=author2cnt.get(sa);
+                if (!ec){
+                    ec= { se:r.value, score:0 };
+                    author2cnt.set(sa,ec);
+                }
+                ec.score+=1;
+            }
+            return r.peers;
+        }
+  
+        await this._closestNodesNavigator(userHash,KPUT,callback);
+
+        let maxscore=0;
+        let r=null;
+        for (var se of author2cnt.values()){
+            if (se.score>maxscore) {
+                r=se.se;
+                maxscore=se.score
+            }
+        }
+        return r?r.entry.author:null;
     }
 
     /**
