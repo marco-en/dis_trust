@@ -1,19 +1,18 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import { PeerFactory, IStorage, IStorageEntry, BasePeer, MAX_TS_DIFF, IStorageMerkleNode, checkUserName, userIdHash, ISignedUserId } from './peer.js';
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,TrustLevel,IStorage } from './IStorage.js'
+import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE} from './peer.js';
 import Debug from 'debug';
-import { MerkleReader,MerkleWriter,IMerkleNode } from './merkle.js';
+import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle.js';
 import {sha} from './mysodium.js';
 import Semaphore from './semaphore.js';
-
-const TESTING=true;
 
 const KPUT = 20;
 const KGET = KPUT*4;
 const MAXVALUESIZE = 2*1024;
-const NODESIZE = TESTING ? 2*1000 : 100*1000;
-const HIGHLEVEL = 3*NODESIZE;
+export const NODESIZE = MAXMSGSIZE-500;
 const ZEROBUF=Buffer.alloc(0);
+const STREAMHIGH=5;
 
 
 interface ServerIp {
@@ -152,7 +151,7 @@ export class DisDHT {
             }
         }
         var rr=r?r.entry.author:null;
-        this._debug("getUser DONE"+rr?.toString('hex'));
+        this._debug("getUser DONE "+rr?.toString('hex'));
         return rr;
     }
 
@@ -191,12 +190,12 @@ export class DisDHT {
     }
 
     /**
-     * Merkle tree algorithm
-     * a stream will be identified by a single hashcode
+     * store a stream in the DHT and return the infoHash that identify it.
+     * Merkle tree algorithm: the stream will be identified by a single hashcode
      * hashcode depends on content only. 
      * 
-     * @param blob blob to store in the DHT
-     * @returns buffer with infohash
+     * @param readableStream:ReadableStream to store in the DHT
+     * @returns buffer identifing the infohash
      */
 
     async putStream(readableStream:ReadableStream):Promise<Buffer>{  
@@ -238,51 +237,30 @@ export class DisDHT {
         return r;
     }
 
+    /**
+     * get a stream stored in the DHT
+     * @param infoHash:Buffer
+     * @returns ReadableStream
+     */
+
     getStream(infoHash:Buffer):ReadableStream{
         if (!this._startup) throw new Error("not started up");
 
         if (!(infoHash instanceof Buffer) || infoHash.length!=this.KEYLEN)
             throw new Error("invalid key");
 
-        const high=new Semaphore(1);
+        const high=new Semaphore(STREAMHIGH);
         const low=new Semaphore(0);
         const msgbuffer:Buffer[]=[];
-        var msgbuffersize:number=0;
         var done:boolean=false;
         var error:Error|null=null;
         var cancelled=false;
 
         const emitchunk=async (msg:Buffer)=>{
-            if (msg.length==0) return;
-            if (cancelled) return;
-            if (msgbuffersize==0)
-                low.inc();
             msgbuffer.push(msg);
-            msgbuffersize+=msg.length;
-            if (msgbuffersize>=HIGHLEVEL)                 
-                await high.dec();
+            low.inc();
+            await high.dec();
         };
-
-        const innerPull=(controller:ReadableStreamDefaultController)=>{
-            if (done){
-                controller.close();
-                return true;
-            }
-            if (error){
-                controller.error(error);
-                return true;
-            }
-            if (msgbuffersize){
-                let b=msgbuffer.shift();
-                if (!b) throw new Error();
-                msgbuffersize-=b.length;
-                if (msgbuffersize<HIGHLEVEL)
-                    high.inc();
-                controller.enqueue(b);
-                return true
-            }
-            return false;
-        }
 
         const read=async (ih:Buffer)=>{
             if (cancelled) return;
@@ -307,12 +285,19 @@ export class DisDHT {
 
         return new ReadableStream({
             async pull(controller) {     
-                if (innerPull(controller)) return;
+                if (done)
+                    return controller.close();
+                if (error)
+                    return controller.error(error);
+                high.inc();
                 await low.dec();
-                innerPull(controller);
+                let b=msgbuffer.shift();
+                if (b) controller.enqueue(b);
             },
             async cancel(controller) {
                 cancelled=true;
+                low.zero();
+                high.zero();
             }
         });
     }

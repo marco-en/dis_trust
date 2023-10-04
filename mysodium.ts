@@ -56,4 +56,27 @@ export function shaStream():sodium.CryptoHashSha256Wrap{
   return sodium.crypto_hash_sha256_instance();
 }
 
+export const NONCEBYTES=sodium.crypto_secretbox_NONCEBYTES;
+
+export function symmetric_encrypt(clear:Buffer,password:string,nonce:Buffer):Buffer{
+  var key=sha(Buffer.from(password));
+  var r=Buffer.alloc(clear.length+sodium.crypto_secretbox_MACBYTES);
+  sodium.crypto_secretbox_easy(r, clear, nonce, key);
+  return r;
+}
+
+export function symmetric_decrypt(encrypted:Buffer,password:string,nonce:Buffer):Buffer|null{
+  var key=sha(Buffer.from(password));  
+  var r=Buffer.alloc(encrypted.length-sodium.crypto_secretbox_MACBYTES);  
+  if(!sodium.crypto_secretbox_open_easy(r,encrypted,nonce,key)) return null;
+  return r;
+}
+
+export function randombytes(num:number){
+  var r=Buffer.alloc(num);
+  sodium.randombytes_buf(r);
+  return r;
+}
+
 export const crypto_hash_sha256_BYTES=sodium.crypto_hash_sha256_BYTES;
+export const crypto_secretbox_NONCEBYTES=sodium.crypto_secretbox_NONCEBYTES;

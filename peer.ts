@@ -10,11 +10,21 @@ import {Contact} from 'k-bucket';
 import {encode,decode} from './encoder.js'
 import { IMerkleNode } from './merkle.js';
 
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,TrustLevel,IStorage } from './IStorage.js'
+
 
 const VERSION=1;
 const KBUCKETSIZE=20;
-const MAXMSGSIZE=4000;
+export const MAXMSGSIZE=131072;
 export const USER_REGEXP=/^\p{L}(\p{L}|\p{N}){3,31}$/ui;
+const SIMPLEPEERCONFIG= { }/*
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }, 
+        { urls: 'stun1.l.google.com:19302' },
+        { urls: 'stun2.l.google.com:19302' },
+        { urls: 'stunserver.org'}
+    ] };*/
+
 
 const DEBUG=1;
 export const MAX_TS_DIFF=DEBUG*5*60000+2*60*1000;
@@ -72,46 +82,13 @@ interface MessageEnvelope{
 }
 
 
-export interface IStorageEntry{
-    author:Buffer,
-    key:Buffer,
-    value:Buffer,
-    timestamp:number,
-    version:number,
-}
-
-export interface ISignedStorageEntry{
-    entry:IStorageEntry,
-    signature:Buffer
-}
 
 export interface IFindResult{
     peers:BasePeer[];
     values:ISignedStorageEntry[];
 }
 
-export interface IStorageMerkleNode{
-    author:Buffer,
-    node:IMerkleNode,
-    timestamp:number,
-    version:number,
-}
 
-export interface ISignedStorageMerkleNode{
-    entry:IStorageMerkleNode,
-    signature:Buffer,
-}
-
-export interface IUserId{
-    userId:string,
-    userHash:Buffer,
-    author:Buffer
-}
-
-export interface ISignedUserId{
-    entry:IUserId,
-    signature:Buffer;
-}
 
 export interface IGetUserResult{
     peers:BasePeer[];
@@ -119,22 +96,9 @@ export interface IGetUserResult{
 }
 
 
-/**
- * @interface IStorage
- * @method{store} - store a message envelope, Key is messageEnvelope.p.key. Author is messageEnvelope.a.
- * @method retreive - key, author optional, page number. return MessageEnvelopes in from newst to oldest
- */
-
-export interface IStorage{
-    //storeInfohash:(value:Buffer)=>Promise<Buffer>,
-    //retreiveInfohash:(infoHash:Buffer)=>Promise<Buffer>,
-    storeSignedEntry:(me:ISignedStorageEntry)=>Promise<void>,
-    retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>,
-    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<ISignedStorageEntry[]>,
-    storeMerkleNode:(snm:ISignedStorageMerkleNode)=>Promise<void>,
-    getMerkleNode:(infoHash:Buffer)=>Promise<ISignedStorageMerkleNode|undefined>,
-    setUserId:(signeUserId:ISignedUserId)=>Promise<boolean>,
-    getUserId:(userHash:Buffer)=>Promise<ISignedUserId|undefined>,
+export interface IEncryptedAccount{
+    encryptedAccount:Buffer,
+    nonce:Buffer,
 }
 
 interface IPendingRequest{
@@ -152,12 +116,19 @@ export function userIdHash(userId:string):Buffer{
     return sodium.sha(Buffer.from(userId.toLowerCase()))
 }
 
+enum PeerStatus{
+    created,
+    active,
+    destroyed,
+}
+
 export class BasePeer extends EventEmitter implements Contact{
     static peerCnt=0;
     _peerFactory:PeerFactory;
     _factoryDebug:Debug.Debugger;
     _debugPrefix:string;
     _storage:IStorage;
+    _PeerStatus:PeerStatus=PeerStatus.created;
 
     constructor(peerFactory:PeerFactory){
         super();
@@ -194,6 +165,7 @@ export class BasePeer extends EventEmitter implements Contact{
         return this._peerFactory.id;
     }
     async destroy(){
+        this._PeerStatus=PeerStatus.destroyed;
         this._debug("destroy");
         this.emit('destroy');
     }
@@ -230,6 +202,11 @@ export class BasePeer extends EventEmitter implements Contact{
 }
 
 class MeAsPeer extends BasePeer{
+    constructor(peerFactory:PeerFactory){
+        super(peerFactory);
+        this._PeerStatus=PeerStatus.active;
+    }
+
     get id():Buffer{
         return this._peerFactory.id;
     }
@@ -336,7 +313,6 @@ class MeAsPeer extends BasePeer{
     }
 }
 
-
 class Peer extends BasePeer  {
     _id:Buffer|null=null;
     _created:number;
@@ -391,6 +367,7 @@ class Peer extends BasePeer  {
         }).then(()=>{
             if (timeout) clearTimeout(timeout);
             this._startStatus=true;
+            this._PeerStatus=PeerStatus.active;
             this._peerFactory.newPeer(this);
         })
         .catch(err=>{
@@ -400,7 +377,7 @@ class Peer extends BasePeer  {
 
     _onIntroduction(introEnvelope:MessageEnvelope){
         if (this._id!=null || this._encrypto_pk!=null) {
-            return this._abortPeer("received double introduction");
+            return this._maliciousPeer("received double introduction");
         }
         this._id=introEnvelope.a;
         this._debugPrefix=this._debugPrefix+" <"+this.nickName+"> "
@@ -413,6 +390,7 @@ class Peer extends BasePeer  {
     }
 
     async added(status:boolean):Promise<void> {
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         if (this._added) return;
         this._added=status;
         if (await this._fullyRemoved()) return;
@@ -423,6 +401,7 @@ class Peer extends BasePeer  {
     }
 
     async _onAdded(requestEnvelope:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         this._otherAdded=requestEnvelope.p.added;
         if (await this._fullyRemoved()) return;
         await this._replyToPeer({added:this._added},requestEnvelope);
@@ -436,8 +415,9 @@ class Peer extends BasePeer  {
     }
 
     async ping():Promise<boolean>{
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         if (this._id==null)
-            throw new Error("Peer not initailized");
+            throw new Error("Peer not initialized");
         var r=false;
         try{
             var me=await this._requestToPeer({},MessageType.ping);
@@ -447,9 +427,9 @@ class Peer extends BasePeer  {
     }
 
     async _onPing(requestEnvelope:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         this._replyToPeer({},requestEnvelope);
     }
-
 
     /**
      * 
@@ -461,6 +441,7 @@ class Peer extends BasePeer  {
 
     async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
         this._debug("store...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         if (this._id==null)
             throw new Error("Peer not initialized");
 
@@ -476,9 +457,10 @@ class Peer extends BasePeer  {
 
     async _onStore(storeEnvelope:MessageEnvelope,){
         this._debug("_onStore...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var signedentry:ISignedStorageEntry=storeEnvelope.p.entry;
         if(!this._peerFactory.verifyStorageEntry(signedentry)){
-            return this._abortPeer("receive fake storage entry");
+            return this._maliciousPeer("receive fake storage entry");
         }
         await this._storage.storeSignedEntry(signedentry);
         var ids=this._onFindNodeInner(signedentry.entry.key,storeEnvelope.p.k)
@@ -495,7 +477,7 @@ class Peer extends BasePeer  {
 
     async setUserId(signedUserId:ISignedUserId,k:number):Promise<BasePeer[]|false|null>{
         this._debug("setUserId...");
-
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         if (!checkUserName(signedUserId.entry.userId)) throw new RangeError("user lenght");
         var res=await this._requestToPeer({
             entry:signedUserId,
@@ -510,16 +492,17 @@ class Peer extends BasePeer  {
 
     async _onSetUserId(userIdMessage:MessageEnvelope){
         this._debug("_onSetUserId...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var su:ISignedUserId=userIdMessage.p.entry;
         var k:number=userIdMessage.p.k;
 
         if (!checkUserName(su.entry.userId)){
-            this._abortPeer("invalid userId");
+            this._maliciousPeer("invalid userId");
             return;
         }
 
         if (!this._peerFactory.verifySignedUserName(su)){
-            this._abortPeer("invalid signature");
+            this._maliciousPeer("invalid signature");
             return;
         }
 
@@ -535,6 +518,7 @@ class Peer extends BasePeer  {
 
     async getUserId(userHash:Buffer,k:number):Promise<IGetUserResult|null>{
         this._debug("getUserId...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var res=await this._requestToPeer({
             userHash:userHash,
             k:k
@@ -549,7 +533,7 @@ class Peer extends BasePeer  {
             r.value=signed;
             if (Buffer.compare(signed.entry.userHash,userHash))
             {
-                this._abortPeer("returned wrong userHash");
+                this._maliciousPeer("returned wrong userHash");
                 return null;
             }
         }
@@ -559,6 +543,7 @@ class Peer extends BasePeer  {
 
     async _onGetUserId(getUser:MessageEnvelope){
         this._debug("_onGetUserId...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var userHash:Buffer=getUser.p.userHash;
         var k:number=getUser.p.k;
         var su=await this._storage.getUserId(userHash);
@@ -579,7 +564,8 @@ class Peer extends BasePeer  {
      */
 
     async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
-        this._debug("storeMerkleNode...")
+        this._debug("storeMerkleNode...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var res=await this._requestToPeer({
             entry:signed,
             k:k
@@ -592,9 +578,10 @@ class Peer extends BasePeer  {
 
     async _onStoreMerkleNode(merkleMessage:MessageEnvelope){
         this._debug("_onStoreMerkleNode ....");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var signed:ISignedStorageMerkleNode=merkleMessage.p.entry;
         if (!this._peerFactory.verifySignedMerkleNode(signed)){
-            this._abortPeer("invalid merkle node received");
+            this._maliciousPeer("invalid merkle node received");
             return;
         }
         var k:number=merkleMessage.p.K;
@@ -612,6 +599,7 @@ class Peer extends BasePeer  {
 
     async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
         this._debug("findMerkleNode...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var res=await this._requestToPeer({
             key:key,
             k:k
@@ -625,11 +613,11 @@ class Peer extends BasePeer  {
             this._debug("findMerkleNode found Node");
             r=res.p.node;
             if(!this._peerFactory.verifySignedMerkleNode(r)){
-                await this._abortPeer("invalid signature in the reply");
+                await this._maliciousPeer("invalid signature in the reply");
                 r=[];                
             }
         }else{
-            await this._abortPeer("invalid reply");
+            await this._maliciousPeer("invalid reply");
             r=[];
         }
         this._debug("findMerkleNode DONE");
@@ -638,6 +626,7 @@ class Peer extends BasePeer  {
 
     async _onfindMerkleNode(findMerkle:MessageEnvelope){
         this._debug("_onfindMerkleNode...");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var key:Buffer=findMerkle.p.key;
         var k:number=findMerkle.p.k;
         var mn=await this._storage.getMerkleNode(key);
@@ -658,8 +647,7 @@ class Peer extends BasePeer  {
      */
 
     async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
-        if (this._id==null)
-            throw new Error("Peer not initialized");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var nodesMessage=await this._requestToPeer({
             n:nodeId,
             k:k
@@ -671,7 +659,8 @@ class Peer extends BasePeer  {
 
 
     async _onFindNode(findNodeEnvelope:MessageEnvelope){
-        var nodesIds=await this._onFindNodeInner(findNodeEnvelope.p.n,findNodeEnvelope.p.k)
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
+        var nodesIds=this._onFindNodeInner(findNodeEnvelope.p.n,findNodeEnvelope.p.k)
         await this._replyToPeer({ids:nodesIds},findNodeEnvelope);
     }
 
@@ -689,8 +678,7 @@ class Peer extends BasePeer  {
      */
 
     async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<IFindResult|null>{
-        if (this._id==null)
-            throw new Error("Peer not initialized");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var q:any={
             n:key,
             b:author,
@@ -706,6 +694,7 @@ class Peer extends BasePeer  {
     }
 
     async _onFindValueAuthor(findValueMessage:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var key=findValueMessage.p.n;
         var author=findValueMessage.p.b;
         var k=findValueMessage.p.k;
@@ -730,8 +719,7 @@ class Peer extends BasePeer  {
      */
 
     async findValues(key:Buffer,k:number,page:number):Promise<IFindResult|null>{
-        if (this._id==null)
-            throw new Error("Peer not initialized");
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var q:any={
             n:key,
             p:page,
@@ -741,7 +729,7 @@ class Peer extends BasePeer  {
         if (!me) return null;
         for(var se of me.p.values){
             if(!this._peerFactory.verifyStorageEntry(se)){
-                this._abortPeer("invalid signature");
+                this._maliciousPeer("invalid signature");
                 return null;
             }
         }
@@ -753,6 +741,7 @@ class Peer extends BasePeer  {
     }
 
     async _onFindValue(findValueMessage:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var key=findValueMessage.p.n;
         var page=findValueMessage.p.p;
         var k=findValueMessage.p.k;
@@ -784,6 +773,7 @@ class Peer extends BasePeer  {
 
     _signalConnect(nodeid:Buffer):Promise<BasePeer>{
         this._debug("_signalConnect to %s...",nodeid.toString('hex').slice(0,6));
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         return new Promise((resolve,reject)=>{
             var simplePeer:SimplePeer.Instance|undefined;
             try{
@@ -791,7 +781,7 @@ class Peer extends BasePeer  {
                     this._debug("_signalConnect to MyselfPeer DONE ");
                     return resolve(this._peerFactory.MyselfPeer);
                 };
-                simplePeer=new SimplePeer({initiator: true, trickle: false, wrtc: wrtc as any });
+                simplePeer=new SimplePeer({initiator: true, trickle: false, wrtc: wrtc as any, config:SIMPLEPEERCONFIG });
                 simplePeer.on('signal', async (data:any) => {
                     this._debug("_signalConnect initiator signal...");
                     var signaldata=JSON.stringify(data)
@@ -820,7 +810,7 @@ class Peer extends BasePeer  {
                     }
                     if (Buffer.compare(signalEnvelope.a,nodeid)){ // this is _peerFactory.newPeernot from the node i am looking for....
                         simplePeer.emit("fake answer");
-                        this._abortPeer("sent a fake signal data")
+                        this._maliciousPeer("sent a fake signal data")
                         return;
                     }
                     simplePeer.signal(signalEnvelope.p.s);
@@ -889,12 +879,12 @@ class Peer extends BasePeer  {
                 var forwardedSignalEnvelope:MessageEnvelope=signalledEnvelope.p.forwardedSignalEnvelope;
                 if (!this._verifySignedMessageEnvelope(forwardedSignalEnvelope)){
                     reject (new Error("could not verify incoming signal"));
-                    this._abortPeer("could not verify incoming signal");
+                    this._maliciousPeer("could not verify incoming signal");
                     return;
                 }
                 if (Buffer.compare(forwardedSignalEnvelope.p.signalTo,this.peerfactoryId)){
                     reject (new Error("received request to signal not for me"));
-                    this._abortPeer("received request to signal not for me");
+                    this._maliciousPeer("received request to signal not for me");
                 }
                 var nodeid:Buffer=forwardedSignalEnvelope.a;
                 var inboundSignaldata:string=forwardedSignalEnvelope.p.signalData;
@@ -905,7 +895,7 @@ class Peer extends BasePeer  {
                     reject("he does not knows me i know him")
                     return;
                 }
-                var simplePeer=new SimplePeer({trickle: false, wrtc: wrtc as any});
+                var simplePeer=new SimplePeer({trickle: false, wrtc: wrtc as any, config:SIMPLEPEERCONFIG});
                 simplePeer.on('signal',async (data:string)=>{
                     try{
                         var signalData=JSON.stringify(data);
@@ -938,36 +928,39 @@ class Peer extends BasePeer  {
         })
     }
 
-    async _onRequestFromPeer(requestEnvelope:MessageEnvelope){ //incoming request is arrived
-        switch(requestEnvelope.m){
+    async _onMessageFromPeer(messageEnvelope:MessageEnvelope,len:number){ //incoming request is arrived
+        switch(messageEnvelope.m){
+            case MessageType.reply:
+                return await this._onReplyFromPeer(messageEnvelope,len);
             case MessageType.introduce:
-                return this._onIntroduction(requestEnvelope);
+                return this._onIntroduction(messageEnvelope);
             case MessageType.ping:
-                return await this._onPing(requestEnvelope);
+                return await this._onPing(messageEnvelope);
             case MessageType.store:
-                return await this._onStore(requestEnvelope);
+                return await this._onStore(messageEnvelope);
             case MessageType.findnode:
-                return await this._onFindNode(requestEnvelope);
+                return await this._onFindNode(messageEnvelope);
             case MessageType.findvalueAuthor:
-                return await this._onFindValueAuthor(requestEnvelope);
+                return await this._onFindValueAuthor(messageEnvelope);
             case MessageType.findvalueNoAuthor:
-                return await this._onFindValue(requestEnvelope);
+                return await this._onFindValue(messageEnvelope);
             case MessageType.signal:
-                return await this._onRequestSignal(requestEnvelope);
+                return await this._onRequestSignal(messageEnvelope);
             case MessageType.signalled:
-                return await this._onRequestSignalled(requestEnvelope);
+                return await this._onRequestSignalled(messageEnvelope);
             case MessageType.add:
-                return await this._onAdded(requestEnvelope);
+                return await this._onAdded(messageEnvelope);
             case MessageType.storemerkle:
-                return await this._onStoreMerkleNode(requestEnvelope);
+                return await this._onStoreMerkleNode(messageEnvelope);
             case MessageType.findmerkle:
-                return await this._onfindMerkleNode(requestEnvelope);
+                return await this._onfindMerkleNode(messageEnvelope);
             case MessageType.setUserId:
-                return await this._onSetUserId(requestEnvelope);
+                return await this._onSetUserId(messageEnvelope);
             case MessageType.getUserId:
-                return await this._onGetUserId(requestEnvelope);
+                return await this._onGetUserId(messageEnvelope);
+            default:
+                await this._maliciousPeer("invalid message type");
         }
-        await this._abortPeer("invalid message type");
     }
 
     _requestToPeer(request:any,messageType:MessageType):Promise<MessageEnvelope|null>{
@@ -989,20 +982,20 @@ class Peer extends BasePeer  {
                 });
             }catch(err){
                 if (timeout!=null) clearTimeout(timeout);
-                this.emit('error',"cannot contact peer");
-                await this._abortPeer("cannot contact peer");
+                this.emit('error',"cannot contact peer"+err);
+                await this._abortPeer("cannot contact peer"+err);
                 reject(err);
             }
         })
     }
 
-    async _onReplyFromPeer(replyEnvelope:MessageEnvelope){ //incoming request is arrived
-        if (this.id==null) return await this._abortPeer("not yet introduced");
+    async _onReplyFromPeer(replyEnvelope:MessageEnvelope,len:number){ //incoming request is arrived
+        if (this._id==null) return await this._abortPeer("not yet introduced");
         const pending=this._pendingRequest.get(replyEnvelope.c);
         if (!pending)
-            return await this._abortPeer("cannot find matching request");
+            return await this._maliciousPeer("cannot find matching request");
         clearTimeout(pending.timeout);
-        pending.resolve(replyEnvelope);
+        pending.resolve(replyEnvelope,len);
         this._pendingRequest.delete(replyEnvelope.c);
     }
 
@@ -1012,15 +1005,12 @@ class Peer extends BasePeer  {
     }
 
     async _onMsg(signedbuffer:Buffer){
-        var messageEnvelope=this._unpacksignedBuffer(signedbuffer);
-        if (messageEnvelope==null)
-            return await this._abortPeer("cannot unpack request");
+        if (signedbuffer.length >= MAXMSGSIZE)
+            return await this._maliciousPeer("message too long");
+        var messageEnvelope = this._unpacksignedBuffer(signedbuffer);
+        if (messageEnvelope == null) return;
         this._seen=Date.now();
-        if (messageEnvelope.m==MessageType.reply){ //reply
-            await this._onReplyFromPeer(messageEnvelope);
-        }else{                                  //request
-            await this._onRequestFromPeer(messageEnvelope);
-        }
+        await this._onMessageFromPeer(messageEnvelope,signedbuffer.length);
     }
 
     _packRequest(payload:any,m:MessageType,cnt:number):Buffer{
@@ -1079,18 +1069,23 @@ class Peer extends BasePeer  {
             var signedRequestObject=decode(signedBuffer);
             var messageEnvelope:MessageEnvelope=decode(signedRequestObject.m);
             messageEnvelope.s=signedRequestObject.s;
-            if (!this._peerFactory.verify(signedRequestObject.m,signedRequestObject.s,messageEnvelope.a)) // messageEnvelope.a shoudl be my peer.id
-                throw new Error("cannot verify signature")
-            if (messageEnvelope.v!=VERSION)
-                throw new Error("wrong version")
-            if (Math.abs(Date.now()-messageEnvelope.t)>MAX_TS_DIFF)
-                throw new Error("message timestamp not in sync")
+            if (!this._peerFactory.verify(signedRequestObject.m,signedRequestObject.s,messageEnvelope.a)){ // messageEnvelope.a shoudl be my peer.id
+                this._maliciousPeer("cannot verify signature");
+                return null;
+            }
+            if (messageEnvelope.v!=VERSION){
+                this._abortPeer("wrong peer version");
+                return null;
+            }
+            if (Math.abs(Date.now()-messageEnvelope.t)>MAX_TS_DIFF){
+                this._abortPeer("message timestamp not in sync");
+                return null;
+
+            }
             return messageEnvelope;
         }
         catch(err){
-            let errmsg="cannot _unpacksignedBuffer "+err;
-            this._debug(errmsg);
-            this._abortPeer(errmsg);
+            this._abortPeer("cannot _unpacksignedBuffer "+err);
             return null;
         }
     }
@@ -1110,6 +1105,13 @@ class Peer extends BasePeer  {
 
     async _abortPeer(msg:string){
         this._debug("Abort Peer %s",msg);
+        await this.destroy();
+        this.emit('error',msg);
+    }
+
+    async _maliciousPeer(msg:string){
+        this._debug("Malicious Peer %s",msg);
+        //  TODO
         await this.destroy();
         this.emit('error',msg);
     }
@@ -1243,6 +1245,7 @@ class VerySimplePeer extends Peer{
         super(peerFactory);
         this._expectednodeid=expectednodeid;
         this._simplePeer=simplePeer;
+        
         this._simplePeer.on('data',async (data:Buffer)=>{
             await this._onMsg(data);
         })
@@ -1442,6 +1445,7 @@ export class PeerFactory{
             userId:userId.toLowerCase(),
             userHash:userIdHash(userId),
             author:this.id,
+            timestamp:Date.now()
         }
         return {
             entry:u,

@@ -1,6 +1,6 @@
+import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage, IStorageEntry, ISetTrust,ISignedSetTrust } from '../IStorage.js'
 
 
-import { IStorage, ISignedStorageEntry,ISignedStorageMerkleNode,ISignedUserId } from "../peer.js";
 import Debug from 'debug';
 
 const PAGESIZE=2;
@@ -10,6 +10,10 @@ export default class mockupStorage implements IStorage{
     _db:Map<string,Map<string,ISignedStorageEntry>>=new Map();
     _merkle:Map<string,ISignedStorageMerkleNode>=new Map();
     _users:Map<string,ISignedUserId>=new Map();
+    _trustLevelDb:Map<string,ISignedSetTrust>=new Map();
+    _accounts:Map<string,Buffer>=new Map();
+
+
     _debug:Debug.Debugger;
 
     constructor(debug?:Debug.Debugger){
@@ -89,5 +93,23 @@ export default class mockupStorage implements IStorage{
         return this._users.get(sh);
     }
 
-    
+    async setTrustRelationship(st:ISignedSetTrust){
+        var sa=st.entry.author.toString('hex')+'-'+st.entry.who.toString('hex');
+        this._trustLevelDb.set(sa,st);
+    }
+
+    async getTrustRelationship(author:Buffer,who:Buffer):Promise<ISignedSetTrust|null>{
+        var sa=author.toString('hex')+'-'+who.toString('hex');
+        var r=this._trustLevelDb.get(sa);
+        if (!r) return null;
+        return r;
+    }  
+
+    async getAccount(userId:string):Promise<Buffer|undefined>{
+        return this._accounts.get(userId);
+    }
+
+    async setAccount(userId:string,encryptedBufferAccount:Buffer){
+        this._accounts.set(userId,encryptedBufferAccount);
+    }
 }

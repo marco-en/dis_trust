@@ -1,5 +1,5 @@
 import { DisDHT } from "../disdht.js";
-import Storage from "./mockupStorage.js";
+import Storage from "../levelstorage.js";
 import fs from "node:fs/promises";
 import * as sodium from '../mysodium.js';
 import {encode,decode} from '../encoder.js';
@@ -14,7 +14,7 @@ async function fn(){
     let keys=JSON.parse(await fs.readFile("test/testkeys.json",{encoding:'utf-8'}));
 
     let sk=Buffer.from(keys[0].sk,'hex');
-    let storage=new Storage(Debug("MockupStorage "+keys[0].pk.toString('hex').slice(0,6)));
+    let storage=new Storage('./testdata/dht_seed.db',MAXMSGSIZE);
     let dhtseed=new DisDHT({
         secretKey:sk,
         storage:storage,
@@ -25,7 +25,7 @@ async function fn(){
     await dhtseed.startUp();
 
     sk=Buffer.from(keys[1].sk,'hex');
-    storage=new Storage(Debug("MockupStorage "+keys[1].pk.toString('hex').slice(0,6)));
+    storage=new Storage('./testdata/dht1.db',MAXMSGSIZE);
     let dht=new DisDHT({
         secretKey:sk,
         storage:storage,
@@ -38,7 +38,7 @@ async function fn(){
 
 
     sk=Buffer.from(keys[2].sk,'hex');
-    storage=new Storage(Debug("MockupStorage "+keys[2].pk.toString('hex').slice(0,6)));
+    storage=new Storage('./testdata/dht2.db',MAXMSGSIZE);
     let dht2=new DisDHT({
         secretKey:sk,
         storage:storage,
@@ -98,7 +98,7 @@ async function fn(){
         console.log(entry);
         return true;
     })
-    console.log("DONE")
+    console.log("DONE get all authors")
 
 
     var msg3={
@@ -138,12 +138,12 @@ async function fn(){
 
     //await dht.shutdown();
     
-    console.log("DONE");
+    console.log("DONE FINITO FATTO");
 }
 
 async function testStream(dht:DisDHT,dht2:DisDHT){
 
-    var aBlock=Buffer.alloc(12345);
+    var aBlock=Buffer.alloc(23456);
     for (let i=0;i<aBlock.length;i++) aBlock[i]=Math.random()*256;
     var arr=[];
     for (let i=0;i<60;i++) arr.push(aBlock);
