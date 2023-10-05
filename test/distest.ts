@@ -122,7 +122,9 @@ async function fn(){
 
     const userId="Marco"
 
-    if(!await dht.setUser(userId)){
+    var sui=dht.createSignedUserName(userId);
+
+    if(!await dht.setUser(sui)){
         console.log("failed to set userID");
     }
 
@@ -132,7 +134,9 @@ async function fn(){
     else if (Buffer.compare(ub,dht.id))
         console.log("got wrong user");
 
-    if(await dht2.setUser(userId)){
+    var suis=dht2.createSignedUserName(userId);
+
+    if(await dht2.setUser(suis)){
         console.log("could steal name");
     }
 

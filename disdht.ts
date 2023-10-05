@@ -84,16 +84,18 @@ export class DisDHT {
         this._debug("shutdown DONE");
     }
 
+    createSignedUserName(userId:string):ISignedUserId{
+        return this._peerFactory.createSignedUserName(userId);
+    }
 
-    async setUser(userId:string):Promise<boolean>{
+    async setUser(signedUserId:ISignedUserId):Promise<boolean>{
         this._debug("setUser...");
         if (!this._startup) throw new Error("not started up");
         var falsecnt=0;
         var truecnt=0;
-        var su=this._peerFactory.createSignedUserName(userId);
 
         const callback=async (peer:BasePeer)=>{
-            var r=await peer.setUserId(su,KPUT);
+            var r=await peer.setUserId(signedUserId,KPUT);
             if (r==null) 
                 return [];
             else if (!r) {
@@ -106,7 +108,7 @@ export class DisDHT {
             }
         }
 
-        await this._closestNodesNavigator(su.entry.userHash,KPUT,callback);
+        await this._closestNodesNavigator(signedUserId.entry.userHash,KPUT,callback);
 
         var r=truecnt > 1 && truecnt > falsecnt
         this._debug("setUser DONE "+r);

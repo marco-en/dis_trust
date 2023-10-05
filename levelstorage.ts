@@ -69,19 +69,24 @@ export default class Storage implements IStorage{
         }
     }
 
-    async setUserId (signeUserId:ISignedUserId):Promise<boolean>{
-        var pv=null;
+    async setUserId (signedUserId:ISignedUserId):Promise<boolean>{
+        var pv:ISignedUserId|undefined;
         try{
-            pv=decode(await this._users.get(signeUserId.entry.userHash));
+            pv=decode(await this._users.get(signedUserId.entry.userHash));
         }catch(err){
         }
         if (pv){
-            if (Buffer.compare(signeUserId.signature,pv.signature))
-                return false; // try to change
-            else
-                return true; // same as before
+            if (signedUserId.entry.userId!=pv.entry.userId){
+                return false; // same has, different user ID. theorically almost impossible
+            }
+            if (Buffer.compare(signedUserId.entry.author,pv.entry.author)==0){
+                return true; // same author
+            }
+            //different author. 
+            if (signedUserId.entry.timestamp>pv.entry.timestamp)
+                return false; // different author but it is newer
         }
-        await this._users.put(signeUserId.entry.userHash,encode(signeUserId,this._maxvaluesize));
+        await this._users.put(signedUserId.entry.userHash,encode(signedUserId,this._maxvaluesize));
         return true; // set first time        
     }
 
