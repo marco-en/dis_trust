@@ -140,7 +140,11 @@ async function fn(){
         console.log("could steal name");
     }
 
-    //await dht.shutdown();
+    console.log("shutting down");
+    await dhtseed.shutdown();
+    await dht.shutdown();
+    await dht2.shutdown();
+
     
     console.log("DONE FINITO FATTO");
 }

@@ -75,10 +75,7 @@ export class DisDHT {
         this._debug("shutdown...");
         if (!this._startup) throw new Error("not started up");
 
-        for (var contact of this._kbucket.toArray()){
-            var peer=contact as BasePeer;
-            await peer.destroy();
-        }
+        await this._peerFactory.shutdown();
         this._startup=false;
 
         this._debug("shutdown DONE");

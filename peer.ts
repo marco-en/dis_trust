@@ -52,6 +52,7 @@ enum MessageType{
     findmerkle,
     setUserId,
     getUserId,
+    shutdown,
 }
 
 /**
@@ -165,9 +166,9 @@ export class BasePeer extends EventEmitter implements Contact{
         return this._peerFactory.id;
     }
     async destroy(){
-        this._PeerStatus=PeerStatus.destroyed;
         this._debug("destroy");
-        this.emit('destroy');
+        this._peerFactory.destryedPeer(this);
+        this._PeerStatus=PeerStatus.destroyed;
     }
     async added(status:boolean):Promise<void> {
         throw new Error("Abstract");
@@ -198,6 +199,8 @@ export class BasePeer extends EventEmitter implements Contact{
     }
     async getUserId(userHash:Buffer,k:number):Promise<IGetUserResult|null>{
         throw new Error("Abstract");
+    }
+    async shutdown(){
     }
 }
 
@@ -389,8 +392,23 @@ class Peer extends BasePeer  {
         }
     }
 
+    async shutdown(){
+        if (this._PeerStatus!=PeerStatus.active) 
+            throw new Error("Peer not active");
+        var me=await this._requestToPeer({},MessageType.shutdown);
+        this.destroy();
+    }
+
+    async _onShutdown(requestEnvelope:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) 
+            throw new Error("Peer not active");
+        await this._replyToPeer({},requestEnvelope);     
+        this.destroy();   
+    }
+
     async added(status:boolean):Promise<void> {
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
+        if (this._PeerStatus!=PeerStatus.active) 
+            throw new Error("Peer not active");
         if (this._added) return;
         this._added=status;
         if (await this._fullyRemoved()) return;
@@ -958,6 +976,8 @@ class Peer extends BasePeer  {
                 return await this._onSetUserId(messageEnvelope);
             case MessageType.getUserId:
                 return await this._onGetUserId(messageEnvelope);
+            case MessageType.shutdown:
+                return await this._onShutdown(messageEnvelope);
             default:
                 await this._maliciousPeer("invalid message type");
         }
@@ -1208,6 +1228,22 @@ class PeerWebsocketListener extends EventEmitter{
         this._peerFactory=peerFactory;
     }
 
+    shutdown():Promise<void>{
+        return new Promise((resolve,reject)=>{
+            if (this._webSocket){
+                this._webSocket.shutDown();
+            }
+
+            if (!this._httpServer) return;
+
+            this._httpServer.close(err=>{
+                if (err) return reject(err);
+                resolve();
+            });
+            this._httpServer.closeAllConnections();
+        })
+    }
+
     startup(port:number,host?:string):Promise<void>{
         return new Promise((resolve,reject)=>{
             try{
@@ -1296,6 +1332,28 @@ export class PeerFactory{
         return this.id.toString('hex');
     }
 
+    async shutdown():Promise<void>{
+
+        const sd=async (cnt:KBucket.Contact) => { 
+            let peer:BasePeer=cnt as any;
+            try{
+                await peer.shutdown();
+            }catch(err){}
+        }
+
+        for (let cnt of this._kbucket.toArray()){
+            await sd(cnt);
+        }
+
+        for (let cnt of this._outofbucket.values()){
+            await sd(cnt);
+        }  
+
+        for(let l of this._peerWebsocketListener){
+            await l.shutdown();
+        }
+    }
+
 
     constructor(storage: IStorage,secretKey?:Buffer){
         //super();
@@ -1366,13 +1424,16 @@ export class PeerFactory{
     newPeer(peer:Peer):void{
         this._debug("newPeer %s",peer.nickName);
         this._kbucket.add(peer as any);
-        peer.once('destroy',()=>{
-            this._kbucket.remove(peer.id);
-            this._outofbucket.delete(peer.idString);
-        })
+
         peer.on('error',(err)=>{
             this._debug("Error by peer "+err);
         })    
+    }
+
+    destryedPeer(peer:BasePeer):void{
+        this._kbucket.removeAllListeners('removed');
+        this._kbucket.remove(peer.id);
+        this._outofbucket.delete(peer.idString);
     }
 
     findPeerById(id:Buffer):BasePeer|null{
