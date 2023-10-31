@@ -1,9 +1,10 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,TrustLevel,IStorage } from './IStorage.js'
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,TrustLevel,IStorage, ISignedStorageBtreeNode } from './IStorage.js'
 import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE} from './peer.js';
 import Debug from 'debug';
 import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle.js';
+import {DisDhtBtree,IBtreeNode} from './DisDhtBtree.js';
 import {sha} from './mysodium.js';
 import Semaphore from './semaphore.js';
 
@@ -204,7 +205,7 @@ export class DisDHT {
         const emit = async (n:IMerkleNode) => { 
             let smn = this._peerFactory.createSignedMerkleNode(n);
             const callback = async (peer:BasePeer) => {
-                await peer.storeMerkleNode(smn,KPUT);
+                //await peer.storeMerkleNode(smn,KPUT);
                 return await peer.storeMerkleNode(smn,KPUT);
             }
             await this._closestNodesNavigator(n.infoHash,KPUT,callback);
@@ -222,7 +223,7 @@ export class DisDHT {
         return r;
     }
 
-    async _getMerkleNode(infoHash:Buffer):Promise<IStorageMerkleNode|undefined>{
+    protected async _getMerkleNode(infoHash:Buffer):Promise<IStorageMerkleNode|undefined>{
         if (!this._startup) throw new Error("not started up");
         var r:IStorageMerkleNode|undefined;
         const callback=async (peer:BasePeer)=>{
@@ -419,7 +420,78 @@ export class DisDHT {
         }
     }
 
-   async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
+    private async _readNodeBtree(infoHash:Buffer) {
+        var r=null;
+        const callback=async (peer:BasePeer)=>{
+            let f=await peer.findBTreeNode (infoHash,KGET);
+            if (Array.isArray(f))
+                return f;
+            r=f.entry.node;
+            return null;
+        } 
+        await this._closestNodesNavigator(infoHash,KGET,callback);
+        return r;
+    } 
+
+    /**
+     * btreePut put an item in a bTree. 
+     * @param element 
+     * @param rootHash 
+     * @param compare 
+     * @param getIndex 
+     * @returns Buffer the new root node infohash
+     */
+
+    async btreePut( element:any,
+                    rootHash:Buffer|null,  
+                    compare:(a:any,b:any)=>number,
+                    getIndex:(a:any)=>any):Promise<Buffer>{
+        this._debug("btreePut.....");
+        
+        const _saveNode= async(node:IBtreeNode)=>{
+
+            var sbt=this._peerFactory.createSignedBtreeNode(node);
+
+            const callback=async (peer:BasePeer)=>{
+                let f=await peer.storeBTreeNode(sbt,KPUT);
+                if (!f) return [];
+                return f;
+            }
+
+            await this._closestNodesNavigator(sbt.entry.node.hash,KGET,callback);
+        }
+
+        const _readNodeBtree=(infoHash:Buffer)=>{
+            return this._readNodeBtree(infoHash);
+        }
+        
+        var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
+        var r=await bt.put(element)
+
+        this._debug("btreePut DONE");
+
+        return r;
+    }
+
+    async btreeGet(key:any,
+                rootHash:Buffer|null,
+                compare:(a:any,b:any)=>number,
+                getIndex:(a:any)=>any,
+                found:(data:any)=>Promise<boolean>):Promise<void>{
+
+        const _saveNode= async(node:IBtreeNode)=>{
+            throw new Error();
+        }
+
+        const _readNodeBtree=(infoHash:Buffer)=>{
+            return this._readNodeBtree(infoHash);
+        }
+
+        var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
+        await bt.get(key,found);
+    }
+
+    protected async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
         this._debug("_closestnodes.....");
 
         const callback=async (peer:BasePeer)=>{
@@ -432,7 +504,7 @@ export class DisDHT {
         return r;
     }
 
-    async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null>): Promise<BasePeer[]> {
+    protected async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null>): Promise<BasePeer[]> {
         this._debug("_closestNodesNavigator.....");
         if (k<1) throw new Error("Invalid K");
         var query:Map<String,boolean>=new Map();

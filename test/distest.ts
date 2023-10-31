@@ -140,6 +140,8 @@ async function fn(){
         console.log("could steal name");
     }
 
+    await testBTree(dht,dht2);
+
     console.log("shutting down");
     await dhtseed.shutdown();
     await dht.shutdown();
@@ -169,8 +171,6 @@ async function testStream(dht:DisDHT,dht2:DisDHT){
     }catch(err){
         console.log(err);
     }
-
-
 }
 
 
@@ -195,6 +195,74 @@ async function comp(a:ReadableStream,b:ReadableStream){
         if (ma.value[ia++]!=mb.value[ib++]) return false;
     }
     return true;
+}
+
+
+function compare(a:number,b:number){
+    return a-b;
+}
+
+function getIndex(a:any){
+    return a.k;
+}
+
+var m_w = 123456789;
+var m_z = 987654321;
+var mask = 0xffffffff;
+
+// Takes any integer
+function seed(i:number) {
+    m_w = (123456789 + i) & mask;
+    m_z = (987654321 - i) & mask;
+}
+
+// Returns number between 0 (inclusive) and 1.0 (exclusive),
+// just like Math.random().
+function random():number
+{
+    m_z = (36969 * (m_z & 65535) + (m_z >> 16)) & mask;
+    m_w = (18000 * (m_w & 65535) + (m_w >> 16)) & mask;
+    var result = ((m_z << 16) + (m_w & 65535)) >>> 0;
+    result /= 4294967296;
+    return result;
+}
+
+const BTREEITER=5000;
+const BTREESEED=2343;
+
+async function testBTree(dht:DisDHT,dht2:DisDHT){
+    var rootHash:Buffer|null=null;
+    seed(BTREESEED);
+    var map=new Map<number,number>();
+
+    for(let i=0;i<BTREEITER;i++){
+        let r={k:random(),v:random()};
+        map.set(r.k,r.v);
+        rootHash=await dht.btreePut(r, rootHash, compare, getIndex);
+    }
+
+    seed(BTREESEED);
+
+    var testres=true;
+
+    for(var k of map.keys()){
+        var v=map.get(k);
+        var lastfound=0;
+
+        const found:(data:any)=>Promise<boolean> =async (data:any)=>{
+            testres &&=  (data.k != k) || data.v == v;
+            testres &&= lastfound <= data.k;
+            lastfound=data.k;
+            return true;
+        }
+
+        await dht2.btreeGet(k,rootHash,compare,getIndex,found);
+    }
+
+
+    if (!testres)
+        console.log("bTree FAILED");
+
 }
 
 fn();

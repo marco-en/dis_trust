@@ -1,4 +1,4 @@
-import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage, IStorageEntry, ISetTrust,ISignedSetTrust } from '../IStorage.js'
+import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage, IStorageEntry, ISetTrust,ISignedSetTrust, ISignedStorageBtreeNode } from '../IStorage.js'
 
 
 import Debug from 'debug';
@@ -19,6 +19,10 @@ export default class mockupStorage implements IStorage{
     constructor(debug?:Debug.Debugger){
         this._debug=debug || Debug("mockupStorage");
     }
+
+    async storeBTreeNode(sbtn: ISignedStorageBtreeNode) { throw new Error()};
+
+    async getBTreeNode(infoHash: Buffer):Promise<ISignedStorageBtreeNode | undefined> { throw new Error()};
 
     async storeSignedEntry(sse:ISignedStorageEntry){
         this._debug(" mockupStorage.storeSignedEntry")

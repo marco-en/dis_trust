@@ -22,7 +22,6 @@ enum ET{
 
 }
 
-
 class BufferWriter{
     _buffer:Buffer;
     _maxSize:number;

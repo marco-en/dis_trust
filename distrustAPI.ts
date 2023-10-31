@@ -1,9 +1,8 @@
 import { EventEmitter } from "k-bucket";
 
-import { IEncryptedAccount } from "./peer.js"; 
 import {encode,decode} from './encoder.js'
 
-import {symmetric_encrypt,symmetric_decrypt,crypto_secretbox_NONCEBYTES,randombytes} from './mysodium.js';
+import {symmetric_encrypt,symmetric_decrypt,sha,crypto_secretbox_NONCEBYTES,randombytes} from './mysodium.js';
 import {DisDHT,NODESIZE} from './disdht.js';
 import {crypto_box_seed_keypair} from './mysodium.js';
 
@@ -91,13 +90,9 @@ export default class DistrustAPI extends EventEmitter{
         if (this.account==null) throw new Error("account not opened");
         this.account.timestamp=Date.now();
         var accountBuffer=encode(this.account,NODESIZE);
-        var nonce=randombytes(crypto_secretbox_NONCEBYTES);
+        var nonce=sha(Buffer.from(this.account.userId)).subarray(0,crypto_secretbox_NONCEBYTES);
         var encryptedBuffer=symmetric_encrypt(accountBuffer,this._password,nonce);
-        var encrAcc:IEncryptedAccount={
-            encryptedAccount:encryptedBuffer,
-            nonce:nonce
-        }
-        return encode(encrAcc,NODESIZE);
+        return encode(encryptedBuffer,NODESIZE);
     }
 
     async saveAccount(){
@@ -105,14 +100,15 @@ export default class DistrustAPI extends EventEmitter{
         await this._storage.setAccount(this.account.userId,await this.exportAccount());
     }
 
-    async importAccount(encryptedAccountBuffer:Buffer,password:string):Promise<boolean>{
+    async importAccount(userId:string,encryptedAccountBuffer:Buffer,password:string):Promise<boolean>{
         try{
-            var encrAcc:IEncryptedAccount=decode(encryptedAccountBuffer);
-            var accountBuffer=symmetric_decrypt(encrAcc.encryptedAccount,password,encrAcc.nonce);
+            var nonce=sha(Buffer.from(userId)).subarray(0,crypto_secretbox_NONCEBYTES);
+            var accountBuffer=symmetric_decrypt(encryptedAccountBuffer,password,nonce);
             if (accountBuffer==null) return false;
             this.account=decode(accountBuffer);
+            if (!this.account) throw new Error("cannot decode account");
+            if (this.account.userId!=userId) throw new Error("mismatching userId");
             this._password=password;
-
             return true;
         }catch(err){
             this.account=null;
@@ -126,7 +122,7 @@ export default class DistrustAPI extends EventEmitter{
         try{
             var b=await this._storage.getAccount(userId);
             if (!b) return false;
-            if (!await this.importAccount(b,password)) return false;
+            if (!await this.importAccount(userId,b,password)) return false;
 
             this._dht=new DisDHT({
                 secretKey: this.account.secretKey,

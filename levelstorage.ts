@@ -1,5 +1,5 @@
 import {Level} from 'level';
-import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage,ISignedSetTrust } from './IStorage.js'
+import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage,ISignedSetTrust,ISignedStorageBtreeNode } from './IStorage.js'
 import {encode,decode} from './encoder.js'
 
 const PAGESIZE=2;
@@ -13,6 +13,7 @@ export default class Storage implements IStorage{
     _users:any;
     _accounts:any;
     _trust:any;
+    _btnodes:any
     _maxvaluesize:number;
 
     constructor(location:string,maxvaluesize:number){
@@ -23,6 +24,7 @@ export default class Storage implements IStorage{
         this._users   =this._level.sublevel('u',BUFFER_ENCODING);
         this._accounts=this._level.sublevel('a',BUFFER_ENCODING);
         this._trust   =this._level.sublevel('t',BUFFER_ENCODING);
+        this._btnodes =this._level.sublevel('n',BUFFER_ENCODING);
     }
 
     async storeSignedEntry(sse:ISignedStorageEntry){
@@ -108,7 +110,7 @@ export default class Storage implements IStorage{
     }
 
     async setAccount(userId:string,encryptedBufferAccount:Buffer){
-        await this._accounts.set(userId,encryptedBufferAccount);
+        await this._accounts.put(userId,encryptedBufferAccount);
     }  
     
     async setTrustRelationship(st:ISignedSetTrust){
@@ -120,9 +122,24 @@ export default class Storage implements IStorage{
         var x=Buffer.concat([author,who]);
         try{
             var b=await this._trust.get(x);
-            return decode(b)
+            return decode(b);
         }catch(err){
             return null;
         }
     }
+
+    async storeBTreeNode(sbtn:ISignedStorageBtreeNode):Promise<void>{
+        await this._btnodes.put(sbtn.entry.node.hash,encode(sbtn,this._maxvaluesize));
+    }
+
+    async getBTreeNode(infoHash:Buffer):Promise<ISignedStorageBtreeNode|undefined>{
+        try{
+            var b=await this._btnodes.get(infoHash);
+            var r=decode(b);
+            return r;
+        }catch(err){
+            return;
+        }
+    }
+
 }
