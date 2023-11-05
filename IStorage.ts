@@ -25,11 +25,6 @@ export interface IStorageBtreeNode extends IStorageEntryBase{
     node: IBtreeNode
 }
 
-export interface ISetTrust extends IStorageEntryBase{
-    who:Buffer,
-    level:TrustLevel, 
-}
-
 export interface ISignedUserId{
     entry:IUserId,
     signature:Buffer;
@@ -51,19 +46,12 @@ export interface ISignedStorageBtreeNode{
     signature:Buffer,  
 }
 
-
-export enum TrustLevel{
+export enum Trust{
     neutral=0,
-    trusted,
-    distrusted
+    distrust=-1,
+    trust=1
 }
 
-
-
-export interface ISignedSetTrust{
-    entry:ISetTrust,
-    signature:Buffer,   
-}
 
 export interface IStorage{
     storeSignedEntry:(me:ISignedStorageEntry)=>Promise<void>,
@@ -83,6 +71,6 @@ export interface IStorage{
     setAccount:(userId:string,encryptedBufferAccount:Buffer)=>Promise<void>,
 
 
-    setTrustRelationship:(st:ISignedSetTrust)=>Promise<void>;
-    getTrustRelationship:(author:Buffer,who:Buffer)=>Promise<ISignedSetTrust|null>;
+    setTrust:(object:Buffer,trust:Trust)=>Promise<void>;
+    getTrust:(object:Buffer)=>Promise<Trust>;
 }

@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,TrustLevel,IStorage, ISignedStorageBtreeNode } from './IStorage.js'
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,IStorage, ISignedStorageBtreeNode } from './IStorage.js'
 import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE} from './peer.js';
 import Debug from 'debug';
 import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle.js';
@@ -49,7 +49,7 @@ export class DisDHT {
         this._debug("created");
     }
 
-    get id () {
+    get id () :Buffer {
         return this._peerFactory.id;
     }
 
@@ -86,6 +86,13 @@ export class DisDHT {
         return this._peerFactory.createSignedUserName(userId);
     }
 
+    /**
+     * put userId to point to me.
+     * the close nodes are trusted not to accept changes.
+     * @param signedUserId 
+     * @returns 
+     */
+
     async setUser(signedUserId:ISignedUserId):Promise<boolean>{
         this._debug("setUser...");
         if (!this._startup) throw new Error("not started up");
@@ -112,6 +119,12 @@ export class DisDHT {
         this._debug("setUser DONE "+r);
         return r;
     }
+
+    /**
+     * 
+     * @param userId get userId public key
+     * @returns 
+     */
 
     async getUser(userId:string):Promise<Buffer|null>{
         this._debug("getUser...");    
@@ -303,7 +316,7 @@ export class DisDHT {
     }
 
     /**
-     * 
+     *  
      * @param key 
      * @param author 
      * @param found 

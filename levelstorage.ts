@@ -1,5 +1,5 @@
 import {Level} from 'level';
-import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage,ISignedSetTrust,ISignedStorageBtreeNode } from './IStorage.js'
+import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,Trust,IStorage,ISignedStorageBtreeNode } from './IStorage.js'
 import {encode,decode} from './encoder.js'
 
 const PAGESIZE=2;
@@ -26,6 +26,7 @@ export default class Storage implements IStorage{
         this._trust   =this._level.sublevel('t',BUFFER_ENCODING);
         this._btnodes =this._level.sublevel('n',BUFFER_ENCODING);
     }
+
 
     async storeSignedEntry(sse:ISignedStorageEntry){
         var skey=sse.entry.key.toString('hex');
@@ -113,20 +114,6 @@ export default class Storage implements IStorage{
         await this._accounts.put(userId,encryptedBufferAccount);
     }  
     
-    async setTrustRelationship(st:ISignedSetTrust){
-        var x=Buffer.concat([st.entry.author,st.entry.who]);
-        await this._trust.set(x,encode(st,this._maxvaluesize));
-    }
-
-    async getTrustRelationship(author:Buffer,who:Buffer):Promise<ISignedSetTrust|null>{
-        var x=Buffer.concat([author,who]);
-        try{
-            var b=await this._trust.get(x);
-            return decode(b);
-        }catch(err){
-            return null;
-        }
-    }
 
     async storeBTreeNode(sbtn:ISignedStorageBtreeNode):Promise<void>{
         await this._btnodes.put(sbtn.entry.node.hash,encode(sbtn,this._maxvaluesize));
@@ -140,6 +127,24 @@ export default class Storage implements IStorage{
         }catch(err){
             return;
         }
+    }
+
+    async setTrust (object: Buffer, trust: Trust) {
+        if (trust==Trust.neutral){
+            try{
+                await this._trust.del(object);
+            }catch(err) {}
+        }else{
+            await this._trust.put(object,trust);
+        }
+    }
+
+    async getTrust ( object: Buffer) {
+        try{
+            return await this._trust.get(object);
+        }catch(err){
+            return Trust.neutral
+        }       
     }
 
 }

@@ -6,11 +6,14 @@ import {symmetric_encrypt,symmetric_decrypt,sha,crypto_secretbox_NONCEBYTES,rand
 import {DisDHT,NODESIZE} from './disdht.js';
 import {crypto_box_seed_keypair} from './mysodium.js';
 
-import {IStorage } from './IStorage.js'
+import {DisDhtBtree,IBtreeNode} from './DisDhtBtree.js'
+import {IStorage,Trust } from './IStorage.js'
 
 
 import mime from "mime";
 
+const VERSION=1;
+const DISSCHEMA="dtp"
 
 export interface IMediaStream{
     mime:string,
@@ -27,10 +30,11 @@ export interface IAccount{
     secretKey:Buffer,
     timestamp:number,
     userId:string,
-    timelineHead?:Buffer,
+    tlBtreeRoot:Buffer|null,
     bio?:string;
     profilePic?:IMediaNode,
     headerPic?:IMediaNode,
+    lastStatus:string
 }
 
 export interface IAccountUpdate{
@@ -40,33 +44,61 @@ export interface IAccountUpdate{
     headerStream?:IMediaStream,  
 }
 
-export interface IAudience{
-
-}
-
 export enum TLType{
     updateAccount,
     post,
     encryptedPost,
     like,
-    dislike,
-    trust,
-    distrust,
-    undo,
+    trust
+}
+
+export interface IMention{
+    account:Buffer,
+    ts:number,
 }
 
 export interface ITimelineEvent{
+    version:number,
     type:TLType,
-    account:IAccount
-
+    ts:number,
 }
 
+export interface ITimelinePost extends ITimelineEvent{
+    markdownText:string,
+    quotedPost:IMention|null,
+    replyTo:IMention|null,
+    quotedAccounts:Buffer[]|null,
+    media:IMediaNode[]|null
+}
+
+export enum Like{
+    neutral=0,
+    dislike=-1,
+    like=1
+}
+
+export interface ITimelineLike extends ITimelineEvent{
+    post:IMention,
+    like:Like,
+}
+
+
+
+export interface ITimelineTrust extends ITimelineEvent{
+    account:Buffer,
+    trust:Trust,
+}
+
+export interface IAudience{
+
+}
 
 export default class DistrustAPI extends EventEmitter{
     _storage:IStorage;
     account:IAccount|null=null;
     _password:string="";
     _dht:DisDHT|null=null;
+    _tlBtree:DisDhtBtree|null=null;
 
     constructor(storage:IStorage){
         super();
@@ -81,6 +113,8 @@ export default class DistrustAPI extends EventEmitter{
             secretKey:sk,
             userId:userId,
             timestamp:Date.now(),
+            tlBtreeRoot:null,
+            lastStatus:""
         }
         this._password=password;
         await this.saveAccount();
@@ -99,6 +133,7 @@ export default class DistrustAPI extends EventEmitter{
         if (this.account==null) throw new Error("account not opened");
         await this._storage.setAccount(this.account.userId,await this.exportAccount());
     }
+
 
     async importAccount(userId:string,encryptedAccountBuffer:Buffer,password:string):Promise<boolean>{
         try{
@@ -146,7 +181,6 @@ export default class DistrustAPI extends EventEmitter{
             await this._dht.shutdown();
             this._dht=null;
         }
-
     }
 
     async changePassword(oldPassword:string,newPassword:string):Promise<boolean>{
@@ -158,12 +192,35 @@ export default class DistrustAPI extends EventEmitter{
     }
 
     async post(markdownText:string,
-            quotedPost:Buffer|null=null,
+            quotedPost:IMention|null=null,
+            replyTo:IMention|null=null,
             quotedAccounts:Buffer[]|null=null,
-            media:IMediaStream[]|null=null,
-            audience:IAudience|null=null):Promise<Buffer>{
+            media:IMediaStream[]|null=null):Promise<string>{
         if (this.account==null) throw new Error("account not opened");
-        throw new Error("TODO");  
+
+
+        var mediaNodes:IMediaNode[]|null=null;
+
+        if (media) {
+            mediaNodes=[];
+            for (let m of media){
+                mediaNodes.push(await this._putMedia(m));
+            }
+        }
+
+        var post:ITimelinePost={
+            version:VERSION,
+            type:TLType.post,
+            ts:Date.now(),
+            markdownText:markdownText,
+            quotedPost:quotedPost,
+            replyTo:replyTo,
+            quotedAccounts:quotedAccounts,
+            media:mediaNodes
+        }
+
+        var r=await this._post(post,markdownText);
+        return r;
     }
 
     async _putMedia(media:IMediaStream):Promise<IMediaNode>{
@@ -175,7 +232,7 @@ export default class DistrustAPI extends EventEmitter{
         };
     }
 
-    _loadImage(image:IMediaNode):IMediaStream{
+    _loadMedia(image:IMediaNode):IMediaStream{
         if (!this._dht) throw new Error();
         var s=this._dht.getStream(image.node);
         return {
@@ -197,24 +254,32 @@ export default class DistrustAPI extends EventEmitter{
         await this.saveAccount();
     }
 
-    async trust(account:Buffer){
+    async trust(account:Buffer,trust:Trust=Trust.trust){
         if (this.account==null) throw new Error("account not opened");
 
+        await this._storage.setTrust(account,trust);
+
+        var post:ITimelineTrust={
+            version:VERSION,
+            type:TLType.trust,
+            ts:Date.now(),
+            account:account,
+            trust:trust
+        }
+        return this._post(post);
     }
 
-    async distrust(account:Buffer){
+    async like(mention:IMention,like:Like=Like.like):Promise<string>{
         if (this.account==null) throw new Error("account not opened");
 
-    }
-
-    async like(account:Buffer){
-        if (this.account==null) throw new Error("account not opened");
-
-    }
-
-    async dislike(account:Buffer){
-        if (this.account==null) throw new Error("account not opened");
-
+        var post:ITimelineLike={
+            version:VERSION,
+            type:TLType.like,
+            ts:Date.now(),
+            post:mention,
+            like:like
+        }
+        return await this._post(post);    
     }
 
     async timeline(account:Buffer,emitevent:(tlevent:ITimelineEvent)=>Promise<boolean>):Promise<void>{
@@ -227,4 +292,27 @@ export default class DistrustAPI extends EventEmitter{
         
     }
 
+    protected async _post(tlevent:ITimelineEvent,lastStatus:string|null=null):Promise<string>{
+        if (this.account==null) throw new Error("account not opened");
+        if (!this._dht) throw new Error();
+        this.account.tlBtreeRoot=await this._dht.btreePut(tlevent,this.account.tlBtreeRoot,tlBTreeCompare,tlBTreeGetIndex);
+        if (lastStatus) this.account.lastStatus=lastStatus;
+        await this.saveAccount();
+        return this._packUrl(this.account.id,tlevent.ts);
+    }
+
+    protected _packUrl(account:Buffer,ts:number){
+        return DISSCHEMA+"://"+account.toString('hex')+'/'+ts
+    }
+    
+
+}
+
+
+function tlBTreeCompare(a:ITimelineEvent,b:ITimelineEvent):number{
+    return a.ts-b.ts;
+}
+
+function tlBTreeGetIndex(a:ITimelineEvent):number{
+    return a.ts;
 }

@@ -11,7 +11,7 @@ import {encode,decode} from './encoder.js'
 import {IMerkleNode} from './merkle.js';
 import {IBtreeNode} from './DisDhtBtree.js'
 
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageBtreeNode,IStorageMerkleNode,ISignedStorageBtreeNode,TrustLevel,IStorage } from './IStorage.js'
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageBtreeNode,IStorageMerkleNode,ISignedStorageBtreeNode,IStorage } from './IStorage.js'
 
 
 const VERSION=1;
@@ -39,21 +39,28 @@ interface Introduction{
 }
 
 enum MessageType{
+    // reply to any message
     reply=0,
+    // P2P
     introduce,
+    add,
+    shutdown,
     ping,
+    // values
     store,
     findnode,
     findvalueAuthor,
     findvalueNoAuthor,
+    // WebRTC
     signal,
     signalled,
-    add,
+    // merkle
     storemerkle,
     findmerkle,
+    //UserId
     setUserId,
     getUserId,
-    shutdown,
+    // BTree
     storeBTreeNode,
     findBTreeNode,
 }

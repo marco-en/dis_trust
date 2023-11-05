@@ -1,5 +1,6 @@
 import {sha} from './mysodium.js';
 import {encode,decode} from './encoder.js'
+import {NODESIZE} from './disdht.js'
 
 export interface IBtreeNode{
     hash:Buffer;
@@ -29,7 +30,7 @@ export class DisDhtBtree{
             saveNode:(node:IBtreeNode)=>Promise<void>,
             compare:(a:any,b:any)=>number,
             getIndex:(a:any)=>any,
-            maxNodeSize:number){
+            maxNodeSize:number=NODESIZE){
         this._rootHash=rootHash;
         this._maxNodeSize=maxNodeSize;
         this._readNode=readNode;
@@ -127,7 +128,7 @@ export class DisDhtBtree{
         newLeaf.sort(compare);
 
         let r=this._makeLeaf(newLeaf);
-        
+
         if (r) { // no split
             await this._saveNode(r);
             return r.hash;
