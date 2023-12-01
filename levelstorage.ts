@@ -1,62 +1,148 @@
-import {Level} from 'level';
-import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,Trust,IStorage,ISignedStorageBtreeNode } from './IStorage.js'
-import {encode,decode} from './encoder.js'
-
-const PAGESIZE=2;
+import Level from 'level';
+import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,Trust,IStorage,ISignedStorageBtreeNode } from './IStorage'
+import {encode,decode} from './encoder'
+import Semaphore from './semaphore';
 
 const BUFFER_ENCODING={ keyEncoding: 'buffer', valueEncoding: 'buffer'};
 
+function ts2BigIntString(num:number){
+    var r=Buffer.alloc(8);
+    r.writeBigInt64BE(BigInt(99999999999999-num));
+    return r;
+}
+
 export default class Storage implements IStorage{
     _level:any;
-    _sse: any;
+    _ts2sse:any;
+    _ka2sse:any;
     _merkle:any;
     _users:any;
     _accounts:any;
     _trust:any;
     _btnodes:any
     _maxvaluesize:number;
+    _author2ts:any;
+    private semaphore:Semaphore;
 
     constructor(location:string,maxvaluesize:number){
         this._maxvaluesize=maxvaluesize;
-        this._level=new Level(location);
-        this._sse     =this._level.sublevel('e',BUFFER_ENCODING);
-        this._merkle  =this._level.sublevel('m',BUFFER_ENCODING);
-        this._users   =this._level.sublevel('u',BUFFER_ENCODING);
-        this._accounts=this._level.sublevel('a',BUFFER_ENCODING);
-        this._trust   =this._level.sublevel('t',BUFFER_ENCODING);
-        this._btnodes =this._level.sublevel('n',BUFFER_ENCODING);
+
+        this._level = new Level.Level(location);
+        this._ka2sse    =this._level.sublevel('1',BUFFER_ENCODING);
+        this._ts2sse    =this._level.sublevel('2',BUFFER_ENCODING);
+        this._merkle    =this._level.sublevel('3',BUFFER_ENCODING);
+        this._users     =this._level.sublevel('4',BUFFER_ENCODING);
+        this._accounts  =this._level.sublevel('5',BUFFER_ENCODING);
+        this._trust     =this._level.sublevel('6',BUFFER_ENCODING);
+        this._btnodes   =this._level.sublevel('7',BUFFER_ENCODING);
+        this._author2ts =this._level.sublevel('8',BUFFER_ENCODING);
+        this.semaphore = new Semaphore(1);
     }
 
+    async deleteDatabase(){
+        await this._level.clear();
+    }
 
     async storeSignedEntry(sse:ISignedStorageEntry){
-        var skey=sse.entry.key.toString('hex');
-        var keysub=this._sse.sublevel(skey,BUFFER_ENCODING);
-        var sauthor=sse.entry.author;
-        await keysub.put(sauthor,encode(sse,this._maxvaluesize));
+        var key=sse.entry.key;
+        var author=sse.entry.author;
+        await this.deleteAuthor(key,author);
+
+        var skey=key.toString('hex');
+        var sa=this._ka2sse.sublevel(skey,BUFFER_ENCODING);
+        var st=this._ts2sse.sublevel(skey,BUFFER_ENCODING);
+
+        var ts=Date.now();
+        var tsbus=ts2BigIntString(ts);
+
+        var v={
+            s:sse,
+            t:tsbus
+        }
+        try{
+            await this.semaphore.dec();
+            let b=encode(v,this._maxvaluesize);
+            await sa.put(author,b);
+            await st.put(tsbus,author);
+        }catch(err){
+            console.log("Error while writing entry");
+            console.log(err);
+            throw(err);
+        }finally{
+            this.semaphore.inc();
+        }
+
+    }
+
+    async deleteAuthor(key: Buffer, author: Buffer){
+        var skey=key.toString('hex');
+        var sa=this._ka2sse.sublevel(skey,BUFFER_ENCODING);
+        var st=this._ts2sse.sublevel(skey,BUFFER_ENCODING);
+
+        try{
+            var bufau=await sa.get(author);
+            var v=decode(bufau);
+
+            try{
+                await this.semaphore.dec();
+                await st.del(v.t);
+                await sa.del(author);  
+            }finally{
+                this.semaphore.inc();
+            }
+    
+
+        }catch(err){}
+    }
+
+    async retreiveAnyAuthor (key: Buffer,tsGt:number, maxNumRecords:number ) : Promise<ISignedStorageEntry[]>{
+        var skey=key.toString('hex');
+        var sa=this._ka2sse.sublevel(skey,BUFFER_ENCODING);
+        var st=this._ts2sse.sublevel(skey,BUFFER_ENCODING);
+
+        var tsbus=ts2BigIntString(tsGt);
+
+        var option:any={
+            limit:maxNumRecords,
+            gt:tsbus
+        };
+        option={}; //for testing
+
+        var r:ISignedStorageEntry[]=[];
+
+        try{
+            await this.semaphore.dec();
+            for await(let author of st.values(option)){
+                let v;
+                try{
+                    v=await sa.get(author);
+                }catch(e){}
+                if (v) {
+                    let vd=decode(v);
+                    r.push(vd.s);
+                }
+                else
+                    console.log("retreiveAnyAuthor not found");
+            }
+        }finally{
+            this.semaphore.inc();
+        }
+        return r;
     }
 
     async retreiveAuthor (key: Buffer, author: Buffer) : Promise<ISignedStorageEntry|null>{
         var skey=key.toString('hex');
-        var keysub=this._sse.sublevel(skey,BUFFER_ENCODING);
-        try{
-            var b=await keysub.get(author);
-            return decode(b) as ISignedStorageEntry;
+        var sa=this._ka2sse.sublevel(skey);
+        try{   
+            await this.semaphore.dec();      
+            var b=sa.get(author);
+            var r=decode(b);
+            return r.s;
         }catch(err){
             return null;
+        }finally{
+            this.semaphore.inc();            
         }
-    }
-
-    async retreiveAnyAuthor (key: Buffer, page: number) : Promise<ISignedStorageEntry[]>{
-        var skey=key.toString('hex');
-        var keysub=this._sse.sublevel(skey,BUFFER_ENCODING);
-        var r:ISignedStorageEntry[]=[];
-        var cnt=0;
-        for await (const v of keysub.values()){
-            if (cnt<page*PAGESIZE) continue;
-            r.push(decode(v));
-            if (r.length==PAGESIZE) break;
-        }
-        return r;
     }
 
     async storeMerkleNode(snm:ISignedStorageMerkleNode){
@@ -147,4 +233,15 @@ export default class Storage implements IStorage{
         }       
     }
 
+
+    async isNewMark(author:Buffer,ts:number):Promise<boolean>{
+        var tf=0;
+        try{
+            tf=await this._author2ts.get(author);
+        }catch(err){}
+        if (ts<=tf) 
+            return false;
+        await this._author2ts.put(author,ts);
+        return true;
+    }
 }

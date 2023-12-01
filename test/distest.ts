@@ -1,121 +1,111 @@
-import { DisDHT } from "../disdht.js";
-import Storage from "../levelstorage.js";
+import { DisDHT } from "../disdht";
+import Storage from "../levelstorage";
 import fs from "node:fs/promises";
-import * as sodium from '../mysodium.js';
-import {encode,decode} from '../encoder.js';
+import * as sodium from '../mysodium';
+import {encode,decode} from '../encoder';
 import Debug from 'debug';
+import {ISignedStorageEntry} from '../IStorage';
+import { DisDhtBtree } from "../DisDhtBtree";
+import Path from 'node:path';
 
 const MAXMSGSIZE=1024*1024;
 console.log("Hello");
 //Debug.enable("*");
 
-async function fn(){
+let keys:any=null;
 
-    let keys=JSON.parse(await fs.readFile("test/testkeys.json",{encoding:'utf-8'}));
 
-    let sk=Buffer.from(keys[0].sk,'hex');
-    let storage=new Storage('./testdata/dht_seed.db',MAXMSGSIZE);
-    let dhtseed=new DisDHT({
+function onMessage(name:string,dht:DisDHT,sse:ISignedStorageEntry){
+    if (Buffer.compare(dht.id,sse.entry.key)) 
+        console.log("%s.on message WRONG KEY",name);
+
+    var content=decode(sse.entry.value);
+
+    console.log("%s.on message: %s %o",name,sse.entry.author.toString("hex").slice(0,6),content)
+}
+
+async function initDHT(name:string,keynum:number,port:number=0,seed?:any):Promise<DisDHT> {
+    if (!keys)
+        keys=JSON.parse(await fs.readFile("test/testkeys.json",{encoding:'utf-8'}));
+
+    console.log('starting up %s....',name);
+
+    var dbPath=Path.resolve('testdata',name);
+    var storage=new Storage(dbPath,MAXMSGSIZE);
+    let sk=Buffer.from(keys[keynum].sk,'hex');
+
+    await storage.deleteDatabase();
+
+    var opt:any={
         secretKey:sk,
         storage:storage,
-        servers:[
-            {port:54321}
-        ]
-    });
-    await dhtseed.startUp();
-
-    sk=Buffer.from(keys[1].sk,'hex');
-    storage=new Storage('./testdata/dht1.db',MAXMSGSIZE);
-    let dht=new DisDHT({
-        secretKey:sk,
-        storage:storage,
-        seed:[
-            {port:54321,host:'localhost'}
-        ]
-    });
-    await dht.startUp();
-
-
-
-    sk=Buffer.from(keys[2].sk,'hex');
-    storage=new Storage('./testdata/dht2.db',MAXMSGSIZE);
-    let dht2=new DisDHT({
-        secretKey:sk,
-        storage:storage,
-        seed:[
-            {port:54321,host:'localhost'}
-        ]
-    });
-    await dht2.startUp();
-
-    
-    console.log("dht2 startUp DONE");
-
-
-    var msg={
-        detailkey:"ciao",
-        payload:"Ok!!!"
     }
+    if (port) opt.servers = [ {port:port} ];
+    if (seed) opt.seed = seed;
 
-    var key=sodium.sha(Buffer.from(msg.detailkey))
-    var value=encode(msg,MAXMSGSIZE);
+    let dht=new DisDHT(opt); 
 
-    console.log(value);
-    await dht.put(key,value);
-
-    var res=await dht2.getAuthor(key,dht.id)
-    console.log(res);
-
-    var resseed=await dhtseed.getAuthor(key,dht.id);
-    console.log(resseed);
-
-    var resauth=await dht.getAuthor(key,dht.id);
-    console.log(resauth);
-
-    
-    var msg2={
-        detailkey:"ciao",
-        payload:"hello"
-    }
-
-    var key2=sodium.sha(Buffer.from(msg2.detailkey))
-    var value2=encode(msg2,MAXMSGSIZE);
-
-    console.log(value2);
-    await dht2.put(key2,value2);
-
-    resauth=await dht.getAuthor(key,dht2.id);
-    console.log(resauth); 
-
-    resseed=await dhtseed.getAuthor(key,dht2.id);
-    console.log(resseed);
-    
-    res=await dht2.getAuthor(key,dht2.id)
-    console.log(res);
-
-    console.log("get all authors")
-    await dhtseed.get(key2,async entry=>{
-        console.log(entry);
-        return true;
+    dht.on('message',(sse:ISignedStorageEntry)=>{
+        onMessage(name,dht,sse);
     })
-    console.log("DONE get all authors")
+    await dht.startUp();
+    console.log('started up %s',name);
+
+    return dht;
+}
+
+async function fn(){
+    let dhtseed=await initDHT('dhtseed',1,54320);
+    let dht=await initDHT('dht',2,0,[{host:'localhost',port:54320}]);
+    let dht2=await initDHT('dht2',3,0,[{host:'localhost',port:54320}]);
+
+    var msg:any="ciao bel messaggio";
+
+    await dht.sendMessage(dht2.id,msg);
 
 
-    var msg3={
+
+    /*
+    var res=await dht2.receiveMessageFromAuthor(dht.id);
+    if (res==null) 
+        console.log("FAILED");
+    else if (JSON.stringify(msg)!=JSON.stringify(decode(res.value)))
+        console.log("FAILED DIFFERENT"); 
+
+    msg={
         detailkey:"ciao",
-        payload:"non so"
+        payload:"bene"
     }
 
-    var key3=sodium.sha(Buffer.from(msg3.detailkey))
-    var value3=encode(msg2,MAXMSGSIZE);
+    await dht.sendMessage(dht.id,encode(msg,MAXMSGSIZE));
 
-    await dhtseed.put(key3,value3);
+    res=await dht.receiveOwnMessage();
+    if (res==null) 
+        console.log("FAILED");
+    else if (JSON.stringify(msg)!=JSON.stringify(decode(res.value)))
+        console.log("FAILED DIFFERENT");
 
-    console.log("get all authors again")
-    await dht.get(key3,async entry=>{
-        console.log(entry);
-        return true;
-    });
+
+    var keepthem:any={};
+
+    msg={
+        payload:"hi from dht"
+    }
+    keepthem[dht.id.toString('hex')]=msg;
+    await dht.sendMessage(dhtseed.id,encode(msg,MAXMSGSIZE));
+
+    var msg2:any={
+        payload:"hello seed from dht2"
+    }
+    keepthem[dht2.id.toString('hex')]=msg2;
+    await dht2.sendMessage(dhtseed.id,encode(msg2,MAXMSGSIZE));
+
+    var msgseed={
+        payload:"hello from myself"
+    }
+    keepthem[dhtseed.id.toString('hex')]=msgseed;
+    await dhtseed.sendMessage(dhtseed.id,encode(msgseed,MAXMSGSIZE));
+
 
 
     await testStream(dht,dht2);
@@ -147,6 +137,7 @@ async function fn(){
     await dht.shutdown();
     await dht2.shutdown();
 
+    */
     
     console.log("DONE FINITO FATTO");
 }
@@ -265,7 +256,13 @@ async function testBTree(dht:DisDHT,dht2:DisDHT){
 
 }
 
-fn();
+
+try{
+    fn();
+}catch(err){
+    console.log("failed badly");
+    console.log(err);
+}
 
 
 

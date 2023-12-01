@@ -1,16 +1,16 @@
-import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,TrustLevel,IStorage, IStorageEntry, ISetTrust,ISignedSetTrust, ISignedStorageBtreeNode } from '../IStorage.js'
+import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,IStorage, IStorageEntry,  ISignedStorageBtreeNode, Trust } from '../IStorage.js'
 
 
 import Debug from 'debug';
 
 const PAGESIZE=2;
 
-export default class mockupStorage implements IStorage{
+export default class mockupStorage /*implements IStorage*/{
 
     _db:Map<string,Map<string,ISignedStorageEntry>>=new Map();
     _merkle:Map<string,ISignedStorageMerkleNode>=new Map();
     _users:Map<string,ISignedUserId>=new Map();
-    _trustLevelDb:Map<string,ISignedSetTrust>=new Map();
+    _trustLevelDb:Map<string,Trust>=new Map();
     _accounts:Map<string,Buffer>=new Map();
 
 
@@ -19,6 +19,8 @@ export default class mockupStorage implements IStorage{
     constructor(debug?:Debug.Debugger){
         this._debug=debug || Debug("mockupStorage");
     }
+    async setTrust (object: Buffer, trust: Trust) {};
+    async getTrust (object: Buffer):Promise<Trust> {throw new Error();};
 
     async storeBTreeNode(sbtn: ISignedStorageBtreeNode) { throw new Error()};
 
@@ -97,12 +99,11 @@ export default class mockupStorage implements IStorage{
         return this._users.get(sh);
     }
 
-    async setTrustRelationship(st:ISignedSetTrust){
-        var sa=st.entry.author.toString('hex')+'-'+st.entry.who.toString('hex');
-        this._trustLevelDb.set(sa,st);
+    async setTrustRelationship(st:Trust){
+        throw new Error();
     }
 
-    async getTrustRelationship(author:Buffer,who:Buffer):Promise<ISignedSetTrust|null>{
+    async getTrustRelationship(author:Buffer,who:Buffer):Promise<Trust|null>{
         var sa=author.toString('hex')+'-'+who.toString('hex');
         var r=this._trustLevelDb.get(sa);
         if (!r) return null;

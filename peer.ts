@@ -1,15 +1,14 @@
-import WebSocket from 'websocket';
-import http from 'http';
 import {EventEmitter} from 'events';
-import SimplePeer from 'simple-peer';
-import wrtc from 'wrtc';
-import * as sodium from './mysodium.js';
 import Debug from 'debug';
+import http from 'http';
+import wrtc from 'wrtc';
+import WebSocket from 'websocket';
+import SimplePeer from 'simple-peer';
+import * as sodium from './mysodium';
 import KBucket from 'k-bucket';
-import {Contact} from 'k-bucket';
-import {encode,decode} from './encoder.js'
-import {IMerkleNode} from './merkle.js';
-import {IBtreeNode} from './DisDhtBtree.js'
+import {encode,decode} from './encoder'
+import {IMerkleNode} from './merkle';
+import {IBtreeNode} from './DisDhtBtree'
 
 import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageBtreeNode,IStorageMerkleNode,ISignedStorageBtreeNode,IStorage } from './IStorage.js'
 
@@ -17,6 +16,8 @@ import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMe
 const VERSION=1;
 const KBUCKETSIZE=20;
 export const MAXMSGSIZE=131072;
+const MAXSTOREVALUESIZE=1024*2;
+const MAXRECORDFINDVALUES=Math.floor(MAXMSGSIZE/MAXSTOREVALUESIZE)-1
 export const USER_REGEXP=/^\p{L}(\p{L}|\p{N}){3,31}$/ui;
 const SIMPLEPEERCONFIG= { }/*
     iceServers: [
@@ -50,7 +51,7 @@ enum MessageType{
     store,
     findnode,
     findvalueAuthor,
-    findvalueNoAuthor,
+    receiveMessages,
     // WebRTC
     signal,
     signalled,
@@ -64,6 +65,8 @@ enum MessageType{
     storeBTreeNode,
     findBTreeNode,
 }
+
+
 
 /**
  * MessageEnvelope
@@ -99,6 +102,11 @@ export interface IFindResult{
     values:ISignedStorageEntry[];
 }
 
+export interface IReceiveMessagesResult{
+    sses:ISignedStorageEntry[];
+    nextTs:number;
+}
+
 
 
 export interface IGetUserResult{
@@ -125,6 +133,11 @@ enum PeerStatus{
     created,
     active,
     destroyed,
+}
+
+interface Contact{
+    id:Buffer,
+    vectorClock:number
 }
 
 export class BasePeer extends EventEmitter implements Contact{
@@ -189,13 +202,14 @@ export class BasePeer extends EventEmitter implements Contact{
     async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
         throw new Error("Abstract");        
     }
-    async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<IFindResult|null>{
+    async findValueAuthor(author:Buffer,k:number):Promise<IFindResult|null>{
         throw new Error("Abstract");
     }
-    async findValues(key:Buffer,k:number,page:number):Promise<IFindResult|null>{
+    async receiveMessages(ts:number):Promise<IReceiveMessagesResult|null>{
         throw new Error("Abstract");
     }
-    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
+    
+    async findNode(k:number):Promise<BasePeer[]>{
         throw new Error("Abstract");
     }
     async setUserId(signedUserId:ISignedUserId,k:number):Promise<BasePeer[]|false|null>{
@@ -234,15 +248,8 @@ class MeAsPeer extends BasePeer{
     }
     async added(status:boolean):Promise<void> { }
 
-    async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
-        try{
-            this._debug("store ...");
-            await this._storage.storeSignedEntry(signedentry);
-            return this._peerFactory.findClosestPeers(signedentry.entry.key,k)
-        }finally{
-            this._debug("store DONE");
-        }
-    }
+
+
     async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
         try{
             this._debug("storeMerkleNode ...");
@@ -282,11 +289,35 @@ class MeAsPeer extends BasePeer{
         }
     }
 
-    async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<IFindResult|null>{
+    async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
+        try{
+            this._debug("store ...");
+            await this._storage.storeSignedEntry(signedentry);
+            return this._peerFactory.findClosestPeers(signedentry.entry.key,k)
+        }finally{
+            this._debug("store DONE");
+        }
+    }
+    async receiveMessages(ts:number):Promise<IReceiveMessagesResult|null>{
+        try{
+            this._debug("findValues ...");
+
+            var values=await this._storage.retreiveAnyAuthor(this.id,ts,MAXRECORDFINDVALUES)
+
+            return{
+                sses:values,
+                nextTs:values.length?values[values.length-1].entry.timestamp:0
+            }
+        }finally{
+            this._debug("findValues DONE");
+        }
+    }
+    
+    async findValueAuthor(author:Buffer,k:number):Promise<IFindResult|null>{
         try{
             this._debug("findValueAuthor ...");
-            var value=await this._storage.retreiveAuthor(key,author)
-            var peers=this._peerFactory.findClosestPeers(key,k);
+            var value=await this._storage.retreiveAuthor(this.id,author)
+            var peers=this._peerFactory.findClosestPeers(this.id,k);
             return{
                 peers:peers,
                 values:value?[value]:[]
@@ -296,23 +327,10 @@ class MeAsPeer extends BasePeer{
         }
     }
 
-    async findValues(key:Buffer,k:number,page:number):Promise<IFindResult|null>{
-        try{
-            this._debug("findValues ...");
-            var values=await this._storage.retreiveAnyAuthor(key,page);
-            var peers=this._peerFactory.findClosestPeers(key,k);
-            return{
-                peers:peers,
-                values:values
-            }
-        }finally{
-            this._debug("findValues DONE");
-        }
-    }
-    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
+    async findNode(k:number):Promise<BasePeer[]>{
         try{
             this._debug("findNode ...");
-            var peers=this._peerFactory.findClosestPeers(nodeId,k);
+            var peers=this._peerFactory.findClosestPeers(this.id,k);
             return peers;
         }finally{
             this._debug("findNode DONE");
@@ -513,10 +531,92 @@ class Peer extends BasePeer  {
             return this._maliciousPeer("receive fake storage entry");
         }
         await this._storage.storeSignedEntry(signedentry);
+        if (Buffer.compare(signedentry.entry.key,this.peerfactoryId)==0) {
+            // the message is for me;
+            this._peerFactory.onReceivedMessage(signedentry);
+        }
+
         var ids=this._onFindNodeInner(signedentry.entry.key,storeEnvelope.p.k)
         await this._replyToPeer({ids:ids},storeEnvelope);
         this._debug("_onStore done");
     }
+
+    /**
+     * 
+     * @param key key to search.
+     * @param author author id. optional/
+     * @param k k closest nodes
+     * @returns 
+     */
+
+    async findValueAuthor(author:Buffer,k:number):Promise<IFindResult|null>{
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
+        var q:any={
+            b:author,
+            k:k
+        }
+        var me=await this._requestToPeer(q,MessageType.findvalueAuthor);
+        if (!me) return null;
+        var peers=await this._nodeids2peers(me.p.ids);
+        return {
+            peers:peers,
+            values:me.p.values
+        }
+    }
+
+    protected async _onFindValueAuthor(findValueMessage:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
+        var key=findValueMessage.a;
+        var author=findValueMessage.p.b;
+        var k=findValueMessage.p.k;
+        var value=await this._storage.retreiveAuthor(key,author);
+        if (value && !this._peerFactory.verifyStorageEntry(value)){
+            this._abortPeer("invalid signature");
+            return;
+        }
+        let ids=this._onFindNodeInner(key,k);
+        await this._replyToPeer({
+            ids:ids,
+            values:value?[value]:[]
+        },findValueMessage);
+    }
+
+    /**
+     * 
+     * @param k k closest nodes
+     * @param page page number startingt from zero. optional.
+     * @returns array of messageEnvolopes previously stored, newst to oldest
+     */
+
+    async receiveMessages(ts:number ):Promise<IReceiveMessagesResult|null>{
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
+        var q:any={
+            ts:ts
+        }
+        var me=await this._requestToPeer(q,MessageType.receiveMessages);
+        if (!me) return null;
+        const values=me.p;
+        for(var se of values){
+            if(!this._peerFactory.verifyStorageEntry(se)){
+                this._maliciousPeer("invalid signature");
+                return null;
+            }
+        }
+        return {
+            sses:values,
+            nextTs:values.lenght?values[values.lenght-1].entry.timestamp:0
+        }
+    }
+
+    protected async _onReceiveMessages(findValueMessage:MessageEnvelope){
+        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
+        var key=findValueMessage.a;
+        var ts=findValueMessage.p.ts;
+        var values=await this._storage.retreiveAnyAuthor(key,ts,MAXRECORDFINDVALUES);
+        await this._replyToPeer(values,findValueMessage);
+    }
+
+
 
     /**
      * 
@@ -756,11 +856,10 @@ class Peer extends BasePeer  {
      * @param k parameter
      * @returns 
      */
-
-    async findNode(nodeId:Buffer,k:number):Promise<BasePeer[]>{
+    
+    async findNode(k:number):Promise<BasePeer[]>{
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var nodesMessage=await this._requestToPeer({
-            n:nodeId,
             k:k
         },MessageType.findnode);
         if (nodesMessage==null) return [];
@@ -771,97 +870,14 @@ class Peer extends BasePeer  {
 
     protected async _onFindNode(findNodeEnvelope:MessageEnvelope){
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var nodesIds=this._onFindNodeInner(findNodeEnvelope.p.n,findNodeEnvelope.p.k)
+        var nodesIds=this._onFindNodeInner(findNodeEnvelope.a,findNodeEnvelope.p.k)
         await this._replyToPeer({ids:nodesIds},findNodeEnvelope);
     }
+    
 
     protected _onFindNodeInner(key:Buffer,k:number):Buffer[]{
         var nodes=this._peerFactory.findClosestPeers(key,k);
         return nodes.map(peer=>peer.id) as Buffer[];
-    }
-
-    /**
-     * 
-     * @param key key to search.
-     * @param author author id. optional/
-     * @param k k closest nodes
-     * @returns 
-     */
-
-    async findValueAuthor(key:Buffer,author:Buffer,k:number):Promise<IFindResult|null>{
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var q:any={
-            n:key,
-            b:author,
-            k:k
-        }
-        var me=await this._requestToPeer(q,MessageType.findvalueAuthor);
-        if (!me) return null;
-        var peers=await this._nodeids2peers(me.p.ids);
-        return {
-            peers:peers,
-            values:me.p.values
-        }
-    }
-
-    protected async _onFindValueAuthor(findValueMessage:MessageEnvelope){
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var key=findValueMessage.p.n;
-        var author=findValueMessage.p.b;
-        var k=findValueMessage.p.k;
-        var value=await this._storage.retreiveAuthor(key,author);
-        if (value && !this._peerFactory.verifyStorageEntry(value)){
-            this._abortPeer("invalid signature");
-            return;
-        }
-        let ids=this._onFindNodeInner(key,k);
-        await this._replyToPeer({
-            ids:ids,
-            values:value?[value]:[]
-        },findValueMessage);
-    }
-
-    /**
-     * 
-     * @param key key to search.
-     * @param k k closest nodes
-     * @param page page number startingt from zero. optional.
-     * @returns array of messageEnvolopes previously stored, newst to oldest
-     */
-
-    async findValues(key:Buffer,k:number,page:number):Promise<IFindResult|null>{
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var q:any={
-            n:key,
-            p:page,
-            k:k
-        }
-        var me=await this._requestToPeer(q,MessageType.findvalueNoAuthor);
-        if (!me) return null;
-        for(var se of me.p.values){
-            if(!this._peerFactory.verifyStorageEntry(se)){
-                this._maliciousPeer("invalid signature");
-                return null;
-            }
-        }
-        var peers=await this._nodeids2peers(me.p.ids);
-        return {
-            peers:peers,
-            values:me.p.values
-        }   
-    }
-
-    protected async _onFindValue(findValueMessage:MessageEnvelope){
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var key=findValueMessage.p.n;
-        var page=findValueMessage.p.p;
-        var k=findValueMessage.p.k;
-        let ids=this._onFindNodeInner(key,k);
-        var values=await this._storage.retreiveAnyAuthor(key,page);
-        await this._replyToPeer({
-            ids:ids,
-            values:values,
-        },findValueMessage);
     }
 
 
@@ -1053,8 +1069,8 @@ class Peer extends BasePeer  {
                 return await this._onFindNode(messageEnvelope);
             case MessageType.findvalueAuthor:
                 return await this._onFindValueAuthor(messageEnvelope);
-            case MessageType.findvalueNoAuthor:
-                return await this._onFindValue(messageEnvelope);
+            case MessageType.receiveMessages:
+                return await this._onReceiveMessages(messageEnvelope);
             case MessageType.signal:
                 return await this._onRequestSignal(messageEnvelope);
             case MessageType.signalled:
@@ -1418,7 +1434,7 @@ class VerySimplePeer extends Peer{
 }
 
 
-export class PeerFactory{
+export class PeerFactory extends EventEmitter{
     _secretKey:Buffer;
     id:Buffer;
     storage:IStorage;
@@ -1434,8 +1450,8 @@ export class PeerFactory{
 
     async shutdown():Promise<void>{
 
-        const sd=async (cnt:KBucket.Contact) => { 
-            let peer:BasePeer=cnt as any;
+        const sd=async (cnt:any) => { 
+            let peer:BasePeer=cnt;
             try{
                 await peer.shutdown();
             }catch(err){}
@@ -1456,7 +1472,7 @@ export class PeerFactory{
 
 
     constructor(storage: IStorage,secretKey?:Buffer){
-        //super();
+        super();
         var r=sodium.keygen(secretKey);
         this._secretKey=r.sk;
         this.id=r.pk;
@@ -1639,6 +1655,10 @@ export class PeerFactory{
         if (Buffer.compare(signed.entry.userHash,sodium.sha(Buffer.from(userId))))
             return false;
         return this.verify(encode(signed.entry,MAXMSGSIZE),signed.signature,signed.entry.author)
+    }
+
+    onReceivedMessage(signedentry:ISignedStorageEntry){
+        this.emit("message",signedentry);
     }
     
 }

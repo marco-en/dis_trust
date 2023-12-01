@@ -56,7 +56,7 @@ export enum Trust{
 export interface IStorage{
     storeSignedEntry:(me:ISignedStorageEntry)=>Promise<void>,
     retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>,
-    retreiveAnyAuthor:(key:Buffer,page:number)=>Promise<ISignedStorageEntry[]>,
+    retreiveAnyAuthor:(key: Buffer,tsGt:number, maxNumRecords:number )=>Promise<ISignedStorageEntry[]>,
 
     storeMerkleNode:(snm:ISignedStorageMerkleNode)=>Promise<void>,
     getMerkleNode:(infoHash:Buffer)=>Promise<ISignedStorageMerkleNode|undefined>,
@@ -70,7 +70,8 @@ export interface IStorage{
     getAccount:(userId:string)=>Promise<Buffer|undefined>,
     setAccount:(userId:string,encryptedBufferAccount:Buffer)=>Promise<void>,
 
-
     setTrust:(object:Buffer,trust:Trust)=>Promise<void>;
     getTrust:(object:Buffer)=>Promise<Trust>;
+
+    isNewMark:(author:Buffer,ts:number)=>Promise<boolean>;
 }

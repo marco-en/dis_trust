@@ -1,4 +1,4 @@
-import { EventEmitter } from "k-bucket";
+import { EventEmitter } from "events";
 
 import {encode,decode} from './encoder.js'
 
@@ -30,8 +30,13 @@ export interface IAccount{
     secretKey:Buffer,
     timestamp:number,
     userId:string,
+
     tlBtreeRoot:Buffer|null,
-    bio?:string;
+    followerBtreeRoot:Buffer|null,
+    followingBtreeRoot:Buffer|null,
+    distrustedBtreeRoot:Buffer|null,
+
+    bio:string;
     profilePic?:IMediaNode,
     headerPic?:IMediaNode,
     lastStatus:string
@@ -114,7 +119,11 @@ export default class DistrustAPI extends EventEmitter{
             userId:userId,
             timestamp:Date.now(),
             tlBtreeRoot:null,
-            lastStatus:""
+            followerBtreeRoot:null,
+            followingBtreeRoot:null,
+            distrustedBtreeRoot:null,
+            lastStatus:"",
+            bio:""
         }
         this._password=password;
         await this.saveAccount();

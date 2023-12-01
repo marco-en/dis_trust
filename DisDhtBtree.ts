@@ -1,6 +1,6 @@
-import {sha} from './mysodium.js';
-import {encode,decode} from './encoder.js'
-import {NODESIZE} from './disdht.js'
+import {sha} from './mysodium';
+import {encode,decode} from './encoder'
+import {NODESIZE} from './disdht'
 
 export interface IBtreeNode{
     hash:Buffer;

@@ -2,11 +2,9 @@
   "name": "dis_trust",
   "version": "0.0.1",
   "description": "",
-  "main": "index.js",
-  "type": "module",
   "scripts": {
     "test": "jest",
-    "build": "tsc"
+    "build": "npx tsc"
   },
   "author": "",
   "license": "ISC",
@@ -27,13 +25,13 @@
     "@types/debug": "^4.1.8",
     "@types/expect": "^24.3.0",
     "@types/k-bucket": "^5.0.1",
-    "@types/level": "^6.0.1",
+    "@types/level": "^6.0.3",
     "@types/mime": "^3.0.2",
     "@types/simple-peer": "^9.11.5",
     "@types/sodium-native": "^2.3.5",
     "@types/stream-buffers": "^3.0.4",
     "@types/websocket": "^1.0.5",
     "debug": "^4.3.4",
-    "typescript": "^5.2.2"
+    "typescript": "^5.3.2"
   }
 }

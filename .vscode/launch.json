@@ -6,7 +6,9 @@
         "request": "launch",
         "name": "Launch test",
         "program": "${workspaceFolder}/test/distest.ts",
-        "env": {"DEBUG":"*,-connect:*"},
+        "env": {
+            "DEBUG":"*,-connect:*"
+        },
         "preLaunchTask": "tsc: build - tsconfig.json",
       
         "outFiles": ["${workspaceFolder}/out/**/*.js"]

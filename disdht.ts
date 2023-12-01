@@ -1,12 +1,14 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,IStorage, ISignedStorageBtreeNode } from './IStorage.js'
-import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE} from './peer.js';
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,IStorage, ISignedStorageBtreeNode } from './IStorage'
+import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE, IReceiveMessagesResult} from './peer';
 import Debug from 'debug';
-import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle.js';
-import {DisDhtBtree,IBtreeNode} from './DisDhtBtree.js';
-import {sha} from './mysodium.js';
-import Semaphore from './semaphore.js';
+import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle';
+import {DisDhtBtree,IBtreeNode} from './DisDhtBtree';
+import {sha} from './mysodium';
+import Semaphore from './semaphore';
+import {EventEmitter} from 'events'
+import { encode } from './encoder';
 
 const KPUT = 20;
 const KGET = KPUT*4;
@@ -14,6 +16,7 @@ const MAXVALUESIZE = 2*1024;
 export const NODESIZE = MAXMSGSIZE-500;
 const ZEROBUF=Buffer.alloc(0);
 const STREAMHIGH=5;
+const BACKGROUND_PAUSE=60*1000;
 
 
 interface ServerIp {
@@ -29,18 +32,27 @@ interface DisDHToptions {
     debug?: Debug.Debugger,
 }
 
-export class DisDHT {
+const ONMESSAGE="message";
+
+export class DisDHT extends EventEmitter{
     KEYLEN:number=sha(ZEROBUF).length;
     _opt: DisDHToptions;
     _peerFactory: PeerFactory;
     _kbucket: Kbucket;
     _debug:Debug.Debugger;
     _startup:boolean=false;
+    _lastMessage:number=0;
+    _storage:IStorage;
 
     constructor(opt: DisDHToptions) {
+        super();
         this._opt = opt;
+        this._storage=opt.storage;
 
         this._peerFactory = new PeerFactory(opt.storage, opt.secretKey);
+        this._peerFactory.on("message",sse=>{
+            this.emitSignedStorageEntry(sse);
+        })
 
 
         this._debug=opt.debug || Debug("DisDHT     :"+this._peerFactory.id.toString('hex').slice(0,6));
@@ -55,7 +67,14 @@ export class DisDHT {
 
     async startUp() {
         this._debug("Startup...")
+        await this._seed();
+        this._startup=true;
+        await this._backgroundIteration();
+        setImmediate(()=>{this._backgroundProcess()})
+        this._debug("Startup done")
+    }
 
+    private async _seed(){
         if (this._opt.servers)
             for (var server of this._opt.servers)
                 await this._peerFactory.createListener(server.port, server.host)
@@ -65,11 +84,17 @@ export class DisDHT {
                     await this._peerFactory.createClient(s.port, s.host);
                 else
                     throw new Error("missing host name");
+    }
 
-        await this._closestNodes(this._peerFactory.id, KPUT);
-        this._startup=true;
-
-        this._debug("Startup done")
+    private _backgroundProcess(){
+        setTimeout(()=>{
+            if (!this._startup) 
+                return;  
+            this._backgroundIteration()
+            .finally(()=>{
+                this._backgroundProcess();
+            })    
+        },BACKGROUND_PAUSE)
     }
 
     async shutdown(){
@@ -176,17 +201,22 @@ export class DisDHT {
      * @returns number of Nodes in which it was saved
      */
 
-    async put(key: Buffer, value: Buffer):Promise<number> {
-        this._debug("put....");
+    async sendMessage(destination: Buffer, content: Buffer|any):Promise<number> {
+        this._debug("sendMessage....");
         if (!this._startup) throw new Error("not started up");
 
-        if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
+        if (!(destination instanceof Buffer) || destination.length!=this.KEYLEN)
             throw new Error("invalid key");
 
-        if (!(value instanceof Buffer) || key.length>MAXVALUESIZE)
-            throw new Error("invalid value");
+        if (!(content instanceof Buffer)){
+            content=encode(content,MAXVALUESIZE);
+        }
 
-        var sse=this._peerFactory.createStorageEntry(key,value);
+        if (content.length>MAXVALUESIZE){
+            throw new Error("content too long");
+        }
+
+        var sse=this._peerFactory.createStorageEntry(destination,content);
 
         var r=0;
 
@@ -196,9 +226,9 @@ export class DisDHT {
             return peers;
         }
 
-        await this._closestNodesNavigator(key,KPUT,callback);
+        await this._closestNodesNavigator(destination,KPUT,callback);
 
-        this._debug("put done "+r);
+        this._debug("sendMessage DONE "+r);
         return r;
     }
 
@@ -315,28 +345,34 @@ export class DisDHT {
         });
     }
 
+    receiveOwnMessage( ):Promise<IStorageEntry|null>{
+        return this.receiveMessageFromAuthor();
+    }
+
     /**
      *  
-     * @param key 
      * @param author 
      * @param found 
      * @returns 
      */
 
-    async getAuthor(key: Buffer, author: Buffer):Promise<IStorageEntry|null> {
+    async receiveMessageFromAuthor( author?: Buffer):Promise<IStorageEntry|null> {
         this._debug("getKeyAuthor....");
         if (!this._startup) throw new Error("not started up");
+        const key=this.id;
 
         if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
             throw new Error("invalid key");
 
-        if (!(author instanceof Buffer) || author.length!=this.KEYLEN)
+        var realAuthor=author?author:this.id;
+
+        if (!(realAuthor instanceof Buffer) || realAuthor.length!=this.KEYLEN)
             throw new Error("invalid author");
 
         var isv:IStorageEntry|null=null;
 
         const callback=async (peer:BasePeer)=>{
-            let fr=await peer.findValueAuthor(key,author,KGET);
+            let fr=await peer.findValueAuthor(realAuthor,KGET);
             if (fr==null) return null;
             for (var v of fr.values)
                 if (isv===null || isv.timestamp<v.entry.timestamp) isv=v.entry;
@@ -348,20 +384,60 @@ export class DisDHT {
         return isv;
     }
 
+    async emitSignedStorageEntry(sse:ISignedStorageEntry):Promise<boolean>{
+        if (!await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp))
+            return false;
+        this.emit(ONMESSAGE,sse);
+        return true
+    }
+
+
+    private async _backgroundIteration(){
+        this._debug("_backgroundIteration....");   
+        if (!this._startup) return;
+
+        const isNewAndMark=async (sse:ISignedStorageEntry)=>{
+            return await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp);
+        }
+
+        const processSses=async (rm:IReceiveMessagesResult|null)=>{
+            if (!rm) return 0;
+            let foundNew=false;
+            for(let sse of rm.sses){
+                if (await this.emitSignedStorageEntry(sse)){
+                    foundNew=true;
+                }
+            }
+            if (!foundNew) return 0;
+            return rm.nextTs;
+        }
+
+        const iterationTs=Date.now();
+
+        const callback=async (peer:BasePeer)=>{
+            let ts=iterationTs;
+            do{
+                var rm=await peer.receiveMessages(ts);
+                ts=await processSses(rm);
+            }while(ts>0);
+            return await peer.findNode(KGET);
+        }
+
+        await this._closestNodesNavigator(this.id,KGET,callback);
+
+        this._debug("_backgroundIteration DONE");     
+    }
+
     /**
      * 
      * @param key 
      * @param author 
      * @param found (messageEnvelope:MessageEnvelope) => Promise<boolean> called for each value found. return false if you want to stop getting values
-     */
 
 
-    async get(key: Buffer,found:(entry:IStorageEntry)=>Promise<boolean>) {
+    async receiveMessage(found:(entry:IStorageEntry)=>Promise<boolean>) {
         this._debug("get....");
         if (!this._startup) throw new Error("not started up");
-
-        if (!(key instanceof Buffer) || key.length!=this.KEYLEN)
-            throw new Error("invalid key");
 
         var timestamp=Date.now();
 
@@ -404,14 +480,14 @@ export class DisDHT {
         }
 
         const callback=async (peer:BasePeer)=>{
-            let fr=await peer.findValues(key,KGET,0);
+            let fr=await peer.findValues(KGET,); //BACO??
             if (fr==null) return [];
             for(let res_signed of fr.values)
                 pushRes(peer,res_signed.entry);
             return fr.peers;
         }
 
-        await this._closestNodesNavigator(key,KGET,callback);
+        await this._closestNodesNavigator(this.id,KGET,callback);
 
         let page=0;
         while(peerIdString2Peer.size){
@@ -421,7 +497,7 @@ export class DisDHT {
             let peerIdStringToDelete=[];
             for (let [peerIdString,peer] of peerIdString2Peer.entries()){
                 let peerpush=false;
-                let fr=await peer.findValues(key,KGET,page);
+                let fr=await peer.findValues(KGET,page); // BACO
                 if (fr!=null){
                     for (let v of fr.values)
                         if(pushRes(peer,v.entry))
@@ -432,6 +508,7 @@ export class DisDHT {
             for (let ids of peerIdStringToDelete) peerIdString2Peer.delete(ids);
         }
     }
+         */
 
     private async _readNodeBtree(infoHash:Buffer) {
         var r=null;
@@ -445,6 +522,7 @@ export class DisDHT {
         await this._closestNodesNavigator(infoHash,KGET,callback);
         return r;
     } 
+
 
     /**
      * btreePut put an item in a bTree. 
@@ -503,7 +581,7 @@ export class DisDHT {
         var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
         await bt.get(key,found);
     }
-
+    /*
     protected async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
         this._debug("_closestnodes.....");
 
@@ -516,7 +594,7 @@ export class DisDHT {
         this._debug("_closestnodes DONE");
         return r;
     }
-
+    */
     protected async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null>): Promise<BasePeer[]> {
         this._debug("_closestNodesNavigator.....");
         if (k<1) throw new Error("Invalid K");
