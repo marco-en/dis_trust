@@ -91,6 +91,9 @@ export class DisDHT extends EventEmitter{
             if (!this._startup) 
                 return;  
             this._backgroundIteration()
+            .catch(err=>{
+                console.error("Backgrounf iteration FAILED due to %o",err);
+            })
             .finally(()=>{
                 this._backgroundProcess();
             })    
@@ -201,16 +204,12 @@ export class DisDHT extends EventEmitter{
      * @returns number of Nodes in which it was saved
      */
 
-    async sendMessage(destination: Buffer, content: Buffer|any):Promise<number> {
-        this._debug("sendMessage....");
+    async sendMessage(destination: Buffer, content: Buffer):Promise<number> {
+        this._debug("sendMessage to %s : %o",destination.toString('hex').slice(0,6),content);
         if (!this._startup) throw new Error("not started up");
 
         if (!(destination instanceof Buffer) || destination.length!=this.KEYLEN)
             throw new Error("invalid key");
-
-        if (!(content instanceof Buffer)){
-            content=encode(content,MAXVALUESIZE);
-        }
 
         if (content.length>MAXVALUESIZE){
             throw new Error("content too long");
@@ -372,15 +371,22 @@ export class DisDHT extends EventEmitter{
         var isv:IStorageEntry|null=null;
 
         const callback=async (peer:BasePeer)=>{
-            let fr=await peer.findValueAuthor(realAuthor,KGET);
-            if (fr==null) return null;
-            for (var v of fr.values)
-                if (isv===null || isv.timestamp<v.entry.timestamp) isv=v.entry;
-            return fr.peers;
+            try{
+                let fr=await peer.findValueAuthor(realAuthor,KGET);
+                if (fr==null) return null;
+                for (var v of fr.values)
+                    if (isv===null || isv.timestamp<v.entry.timestamp) isv=v.entry;
+                return fr.peers;
+            }catch(err){
+                console.log("receiveMessageFromAuthor callback failed");
+                console.log(err);
+                return null;
+            }
         }
 
         await this._closestNodesNavigator(key,KGET,callback);
-    
+
+        
         return isv;
     }
 
@@ -428,87 +434,6 @@ export class DisDHT extends EventEmitter{
         this._debug("_backgroundIteration DONE");     
     }
 
-    /**
-     * 
-     * @param key 
-     * @param author 
-     * @param found (messageEnvelope:MessageEnvelope) => Promise<boolean> called for each value found. return false if you want to stop getting values
-
-
-    async receiveMessage(found:(entry:IStorageEntry)=>Promise<boolean>) {
-        this._debug("get....");
-        if (!this._startup) throw new Error("not started up");
-
-        var timestamp=Date.now();
-
-        interface authorRes{
-            res:IStorageEntry,
-            sent:boolean
-        }
-
-        var authorIdString2Res:Map<string,authorRes>=new Map();
-        var peerIdString2Peer:Map<string,BasePeer>=new Map();
-
-        const sendResults=async ():Promise<boolean>=>{
-            let results=[];
-            let sent=false;
-            for(let ar of authorIdString2Res.values())
-                if(!ar.sent)
-                    results.push(ar);
-            results.sort((a,b)=>a.res.timestamp-b.res.timestamp);
-            for(let ar of results){
-                ar.sent=true;
-                if (!await found(ar.res))
-                    return false;
-                sent=true;
-            }
-            return sent;
-        }
-
-        const pushRes=(peer:BasePeer,res:IStorageEntry):boolean=>{
-            if (res.timestamp>=timestamp+MAX_TS_DIFF)
-                return false;
-            var authorIdString=res.author.toString('hex');
-            let prev=authorIdString2Res.get(authorIdString);
-            if (prev==null || prev.res.timestamp<res.timestamp){
-                authorIdString2Res.set(authorIdString,{res:res,sent:false});
-                peerIdString2Peer.set(peer.idString,peer);
-                return true;
-            }
-            else
-                return false;
-        }
-
-        const callback=async (peer:BasePeer)=>{
-            let fr=await peer.findValues(KGET,); //BACO??
-            if (fr==null) return [];
-            for(let res_signed of fr.values)
-                pushRes(peer,res_signed.entry);
-            return fr.peers;
-        }
-
-        await this._closestNodesNavigator(this.id,KGET,callback);
-
-        let page=0;
-        while(peerIdString2Peer.size){
-            if (!await sendResults()) 
-                return;
-            page++;
-            let peerIdStringToDelete=[];
-            for (let [peerIdString,peer] of peerIdString2Peer.entries()){
-                let peerpush=false;
-                let fr=await peer.findValues(KGET,page); // BACO
-                if (fr!=null){
-                    for (let v of fr.values)
-                        if(pushRes(peer,v.entry))
-                        peerpush=true;
-                }
-                if (!peerpush) peerIdStringToDelete.push(peerIdString);
-            }
-            for (let ids of peerIdStringToDelete) peerIdString2Peer.delete(ids);
-        }
-    }
-         */
 
     private async _readNodeBtree(infoHash:Buffer) {
         var r=null;

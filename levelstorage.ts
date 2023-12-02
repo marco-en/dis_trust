@@ -39,6 +39,12 @@ export default class Storage implements IStorage{
         this.semaphore = new Semaphore(1);
     }
 
+    async close(){
+        await this._level.close();
+
+
+    }
+
     async deleteDatabase(){
         await this._level.clear();
     }
@@ -132,17 +138,15 @@ export default class Storage implements IStorage{
 
     async retreiveAuthor (key: Buffer, author: Buffer) : Promise<ISignedStorageEntry|null>{
         var skey=key.toString('hex');
-        var sa=this._ka2sse.sublevel(skey);
+        var sa=this._ka2sse.sublevel(skey,BUFFER_ENCODING);
+        var b;
         try{   
-            await this.semaphore.dec();      
-            var b=sa.get(author);
-            var r=decode(b);
-            return r.s;
+            b=await sa.get(author);
         }catch(err){
             return null;
-        }finally{
-            this.semaphore.inc();            
         }
+        var r=decode(b);
+        return r.s;
     }
 
     async storeMerkleNode(snm:ISignedStorageMerkleNode){

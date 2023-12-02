@@ -15,16 +15,8 @@ console.log("Hello");
 let keys:any=null;
 
 
-function onMessage(name:string,dht:DisDHT,sse:ISignedStorageEntry){
-    if (Buffer.compare(dht.id,sse.entry.key)) 
-        console.log("%s.on message WRONG KEY",name);
 
-    var content=decode(sse.entry.value);
-
-    console.log("%s.on message: %s %o",name,sse.entry.author.toString("hex").slice(0,6),content)
-}
-
-async function initDHT(name:string,keynum:number,port:number=0,seed?:any):Promise<DisDHT> {
+async function initDHT(name:string,keynum:number,port:number=0,seed?:any,preserveDB:boolean=false):Promise<DisDHT> {
     if (!keys)
         keys=JSON.parse(await fs.readFile("test/testkeys.json",{encoding:'utf-8'}));
 
@@ -34,7 +26,8 @@ async function initDHT(name:string,keynum:number,port:number=0,seed?:any):Promis
     var storage=new Storage(dbPath,MAXMSGSIZE);
     let sk=Buffer.from(keys[keynum].sk,'hex');
 
-    await storage.deleteDatabase();
+    if (!preserveDB)
+        await storage.deleteDatabase();
 
     var opt:any={
         secretKey:sk,
@@ -54,60 +47,111 @@ async function initDHT(name:string,keynum:number,port:number=0,seed?:any):Promis
     return dht;
 }
 
+
+var expectedDhtName="";
+var expectedMsg:Buffer;
+var expectedResolve:any=null;
+var expectedReject:any=null;
+
+function onMessage(name:string,dht:DisDHT,sse:ISignedStorageEntry){
+    if (Buffer.compare(dht.id,sse.entry.key)) 
+        console.log("%s.on message WRONG KEY",name);
+
+    console.log("%s.on message: %s %o",name,sse.entry.author.toString("hex").slice(0,6),sse.entry.value);
+    if (expectedResolve){
+        if (expectedDhtName==name && Buffer.compare(expectedMsg,sse.entry.value)==0)
+            expectedResolve();
+        else
+        {
+            console.log("expected message is WRONG");
+            expectedReject();
+        }
+        expectedResolve=null;
+        expectedReject=null;
+    }else{
+        console.log("UNEXPECTED message")
+    }
+}
+
+async function expectMessage(dhtname:string,msg:Buffer):Promise<void>{
+    expectedDhtName=dhtname;
+    expectedMsg=msg;
+    return new Promise((resolve,reject)=>{
+        expectedResolve=resolve;
+        expectedReject=reject;
+    })
+}
+
+
 async function fn(){
     let dhtseed=await initDHT('dhtseed',1,54320);
     let dht=await initDHT('dht',2,0,[{host:'localhost',port:54320}]);
     let dht2=await initDHT('dht2',3,0,[{host:'localhost',port:54320}]);
 
-    var msg:any="ciao bel messaggio";
+    var msg=encode("ciao bel messaggio",MAXMSGSIZE);
 
+    var pr=expectMessage("dht2",msg);
     await dht.sendMessage(dht2.id,msg);
+    await pr;
 
+    var dhtid=dht.id;
 
+    console.log("dht.shutdown")
+    await dht.shutdown();
+    await (dht._storage as Storage).close();
 
-    /*
+    var msg2=encode("messaggio a peer assente",MAXMSGSIZE);
+
+    await dht2.sendMessage(dhtid,msg2);
+
+    pr=expectMessage("dht",msg2);
+    dht=await initDHT('dht',2,0,[{host:'localhost',port:54320}]);
+    await pr;
+
     var res=await dht2.receiveMessageFromAuthor(dht.id);
-    if (res==null) 
+    if (res==null || !res.value) 
         console.log("FAILED");
-    else if (JSON.stringify(msg)!=JSON.stringify(decode(res.value)))
-        console.log("FAILED DIFFERENT"); 
+    else {
+        if (Buffer.compare(msg,res.value)) 
+            console.log("FAILED DIFFERENT"); 
+    } 
 
-    msg={
+    
+    let msgown={
         detailkey:"ciao",
         payload:"bene"
     }
 
-    await dht.sendMessage(dht.id,encode(msg,MAXMSGSIZE));
+    await dht.sendMessage(dht.id,encode(msgown,MAXMSGSIZE));
 
     res=await dht.receiveOwnMessage();
     if (res==null) 
         console.log("FAILED");
-    else if (JSON.stringify(msg)!=JSON.stringify(decode(res.value)))
+    else if (JSON.stringify(msgown)!=JSON.stringify(decode(res.value)))
         console.log("FAILED DIFFERENT");
 
-
-    var keepthem:any={};
-
-    msg={
+    var amsg=encode({
         payload:"hi from dht"
-    }
-    keepthem[dht.id.toString('hex')]=msg;
-    await dht.sendMessage(dhtseed.id,encode(msg,MAXMSGSIZE));
+    },MAXMSGSIZE);
+    pr=expectMessage("dhtseed",amsg);
+    await dht.sendMessage(dhtseed.id,amsg);
+    await pr;
 
-    var msg2:any={
+    amsg=encode({
         payload:"hello seed from dht2"
-    }
-    keepthem[dht2.id.toString('hex')]=msg2;
-    await dht2.sendMessage(dhtseed.id,encode(msg2,MAXMSGSIZE));
+    },MAXMSGSIZE);
+    pr=expectMessage("dhtseed",amsg);
+    await dht2.sendMessage(dhtseed.id,amsg);
+    await pr;
 
-    var msgseed={
+    amsg=encode({
         payload:"hello from myself"
-    }
-    keepthem[dhtseed.id.toString('hex')]=msgseed;
-    await dhtseed.sendMessage(dhtseed.id,encode(msgseed,MAXMSGSIZE));
+    },MAXMSGSIZE);
+    pr=expectMessage("dhtseed",amsg);
+    await dhtseed.sendMessage(dhtseed.id,amsg);
+    await pr;
 
-
-
+    /*
     await testStream(dht,dht2);
 
     const userId="Marco"
@@ -257,12 +301,12 @@ async function testBTree(dht:DisDHT,dht2:DisDHT){
 }
 
 
-try{
-    fn();
-}catch(err){
+fn()
+.catch(err=>{
     console.log("failed badly");
     console.log(err);
-}
+})
+
 
 
 

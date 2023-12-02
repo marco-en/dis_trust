@@ -293,6 +293,7 @@ class MeAsPeer extends BasePeer{
         try{
             this._debug("store ...");
             await this._storage.storeSignedEntry(signedentry);
+            this._peerFactory.onReceivedMessage(signedentry);
             return this._peerFactory.findClosestPeers(signedentry.entry.key,k)
         }finally{
             this._debug("store DONE");
@@ -318,12 +319,16 @@ class MeAsPeer extends BasePeer{
             this._debug("findValueAuthor ...");
             var value=await this._storage.retreiveAuthor(this.id,author)
             var peers=this._peerFactory.findClosestPeers(this.id,k);
-            return{
+            let r={
                 peers:peers,
                 values:value?[value]:[]
             }
-        }finally{
             this._debug("findValueAuthor DONE");
+            return r;
+        }catch(err){
+            this._debug("findValueAuthor FAILED");
+            console.log(err);
+            throw(err);
         }
     }
 
@@ -531,10 +536,7 @@ class Peer extends BasePeer  {
             return this._maliciousPeer("receive fake storage entry");
         }
         await this._storage.storeSignedEntry(signedentry);
-        if (Buffer.compare(signedentry.entry.key,this.peerfactoryId)==0) {
-            // the message is for me;
-            this._peerFactory.onReceivedMessage(signedentry);
-        }
+        this._peerFactory.onReceivedMessage(signedentry);
 
         var ids=this._onFindNodeInner(signedentry.entry.key,storeEnvelope.p.k)
         await this._replyToPeer({ids:ids},storeEnvelope);
@@ -1658,6 +1660,8 @@ export class PeerFactory extends EventEmitter{
     }
 
     onReceivedMessage(signedentry:ISignedStorageEntry){
+        if (Buffer.compare(signedentry.entry.key,this.id)) 
+            return;
         this.emit("message",signedentry);
     }
     
