@@ -34,18 +34,26 @@ interface DisDHToptions {
 
 const ONMESSAGE="message";
 
+export interface ImessageEvent{
+    author:Buffer,
+    content:Buffer
+}
+
 export class DisDHT extends EventEmitter{
-    KEYLEN:number=sha(ZEROBUF).length;
-    _opt: DisDHToptions;
-    _peerFactory: PeerFactory;
-    _kbucket: Kbucket;
-    _debug:Debug.Debugger;
-    _startup:boolean=false;
-    _lastMessage:number=0;
-    _storage:IStorage;
+    private KEYLEN:number=sha(ZEROBUF).length;
+    private _opt: DisDHToptions;
+    private _peerFactory: PeerFactory;
+    private _kbucket: Kbucket;
+    private _debug:Debug.Debugger;
+    private _startup:boolean=false;
+    private _lastMessage:number=0;
+    public _storage:IStorage;
+    private _intervalBackgroundProcess:any;
+    private _onceatime:Semaphore;
 
     constructor(opt: DisDHToptions) {
         super();
+        this._onceatime=new Semaphore(1);
         this._opt = opt;
         this._storage=opt.storage;
 
@@ -66,12 +74,17 @@ export class DisDHT extends EventEmitter{
     }
 
     async startUp() {
-        this._debug("Startup...")
-        await this._seed();
-        this._startup=true;
+        this._debug("DisDHT startUp...")
+        try{
+            await this._onceatime.dec();
+            await this._seed();
+            this._startup=true;
+        }finally{
+            this._onceatime.inc();
+        }
         await this._backgroundIteration();
         setImmediate(()=>{this._backgroundProcess()})
-        this._debug("Startup done")
+        this._debug("DisDHT startUp done")
     }
 
     private async _seed(){
@@ -87,31 +100,36 @@ export class DisDHT extends EventEmitter{
     }
 
     private _backgroundProcess(){
-        setTimeout(()=>{
-            if (!this._startup) 
-                return;  
+        this._intervalBackgroundProcess=setInterval(()=>{
             this._backgroundIteration()
-            .catch(err=>{
-                console.error("Backgrounf iteration FAILED due to %o",err);
+            .then(iter=>{
+                if (!iter)
+                    this._debug("_backgroundProcess did not run");
             })
-            .finally(()=>{
-                this._backgroundProcess();
-            })    
+            .catch(err=>{
+                console.error("Background iteration FAILED due to %o",err);
+            })
         },BACKGROUND_PAUSE)
     }
 
     async shutdown(){
         this._debug("shutdown...");
-        if (!this._startup) throw new Error("not started up");
+        try{
+            await this._onceatime.dec();
+            if (!this._startup) throw new Error("not started up");
 
-        await this._peerFactory.shutdown();
-        this._startup=false;
+            if (this._intervalBackgroundProcess) clearInterval(this._intervalBackgroundProcess);
+            this._intervalBackgroundProcess=null;
+    
+            await this._peerFactory.shutdown();
+            this._startup=false;
+    
+            this._debug("shutdown DONE");
 
-        this._debug("shutdown DONE");
-    }
+        }finally{
+            this._onceatime.inc();
+        }
 
-    createSignedUserName(userId:string):ISignedUserId{
-        return this._peerFactory.createSignedUserName(userId);
     }
 
     /**
@@ -121,8 +139,11 @@ export class DisDHT extends EventEmitter{
      * @returns 
      */
 
-    async setUser(signedUserId:ISignedUserId):Promise<boolean>{
+    public async setUser(userId:string):Promise<boolean>{
         this._debug("setUser...");
+
+        const signedUserId=this._peerFactory.createSignedUserName(userId);
+
         if (!this._startup) throw new Error("not started up");
         var falsecnt=0;
         var truecnt=0;
@@ -141,7 +162,12 @@ export class DisDHT extends EventEmitter{
             }
         }
 
-        await this._closestNodesNavigator(signedUserId.entry.userHash,KPUT,callback);
+        try{
+            await this._onceatime.dec();
+            await this._closestNodesNavigator(signedUserId.entry.userHash,KPUT,callback);
+        }finally{
+            this._onceatime.inc();
+        }
 
         var r=truecnt > 1 && truecnt > falsecnt
         this._debug("setUser DONE "+r);
@@ -154,7 +180,7 @@ export class DisDHT extends EventEmitter{
      * @returns 
      */
 
-    async getUser(userId:string):Promise<Buffer|null>{
+    public async getUser(userId:string):Promise<Buffer|null>{
         this._debug("getUser...");    
 
         if (!this._startup) throw new Error("not started up");
@@ -180,9 +206,14 @@ export class DisDHT extends EventEmitter{
             }
             return r.peers;
         }
-  
-        await this._closestNodesNavigator(userHash,KPUT,callback);
 
+        try{
+            await this._onceatime.dec();
+            await this._closestNodesNavigator(userHash,KPUT,callback);
+        }finally{
+            this._onceatime.inc();
+        }
+  
         let maxscore=0;
         let r=null;
         for (var se of author2cnt.values()){
@@ -204,7 +235,7 @@ export class DisDHT extends EventEmitter{
      * @returns number of Nodes in which it was saved
      */
 
-    async sendMessage(destination: Buffer, content: Buffer):Promise<number> {
+    public async sendMessage(destination: Buffer, content: Buffer):Promise<number> {
         this._debug("sendMessage to %s : %o",destination.toString('hex').slice(0,6),content);
         if (!this._startup) throw new Error("not started up");
 
@@ -225,7 +256,12 @@ export class DisDHT extends EventEmitter{
             return peers;
         }
 
-        await this._closestNodesNavigator(destination,KPUT,callback);
+        try{
+            await this._onceatime.dec();
+            await this._closestNodesNavigator(destination,KPUT,callback);
+        }finally{
+            this._onceatime.inc();
+        }
 
         this._debug("sendMessage DONE "+r);
         return r;
@@ -240,34 +276,42 @@ export class DisDHT extends EventEmitter{
      * @returns buffer identifing the infohash
      */
 
-    async putStream(readableStream:ReadableStream):Promise<Buffer>{  
+    public async putStream(readableStream:ReadableStream):Promise<Buffer>{  
         this._debug("putStream....");
+        try{
+            await this._onceatime.dec();
 
-        if (!this._startup) throw new Error("not started up");
-        const emit = async (n:IMerkleNode) => { 
-            let smn = this._peerFactory.createSignedMerkleNode(n);
-            const callback = async (peer:BasePeer) => {
-                //await peer.storeMerkleNode(smn,KPUT);
-                return await peer.storeMerkleNode(smn,KPUT);
+            if (!this._startup) throw new Error("not started up");
+            const emit = async (n:IMerkleNode) => { 
+                let smn = this._peerFactory.createSignedMerkleNode(n);
+                const callback = async (peer:BasePeer) => {
+                    //await peer.storeMerkleNode(smn,KPUT);
+                    return await peer.storeMerkleNode(smn,KPUT);
+                }
+                await this._closestNodesNavigator(n.infoHash,KPUT,callback);
             }
-            await this._closestNodesNavigator(n.infoHash,KPUT,callback);
+            const mw = new MerkleWriter(emit,sha,NODESIZE);
+            let reader = readableStream.getReader();
+            let chunk = await reader.read();
+            while(!chunk.done){
+                await mw.update(chunk.value);
+                chunk = await reader.read();
+            }
+            await reader.cancel();
+            var r=await mw.done();
+            this._debug("putStream DONE");        
+            return r;
+
+        }finally{
+            this._onceatime.inc();
         }
-        const mw = new MerkleWriter(emit,sha,NODESIZE);
-        let reader = readableStream.getReader();
-        let chunk = await reader.read();
-        while(!chunk.done){
-            await mw.update(chunk.value);
-            chunk = await reader.read();
-        }
-        await reader.cancel();
-        var r=await mw.done();
-        this._debug("putStream DONE");        
-        return r;
+
     }
 
     protected async _getMerkleNode(infoHash:Buffer):Promise<IStorageMerkleNode|undefined>{
         if (!this._startup) throw new Error("not started up");
         var r:IStorageMerkleNode|undefined;
+
         const callback=async (peer:BasePeer)=>{
             let f=await peer.findMerkleNode(infoHash,KGET);
             if (Array.isArray(f))   
@@ -275,7 +319,14 @@ export class DisDHT extends EventEmitter{
             r=f.entry;
             return null;
         } 
-        await this._closestNodesNavigator(infoHash,KGET,callback);
+
+        try{
+            await this._onceatime.dec();
+            await this._closestNodesNavigator(infoHash,KGET,callback);
+        }finally{
+            this._onceatime.inc();
+        }
+
         return r;
     }
 
@@ -285,7 +336,9 @@ export class DisDHT extends EventEmitter{
      * @returns ReadableStream
      */
 
-    getStream(infoHash:Buffer):ReadableStream{
+    public getStream(infoHash:Buffer):ReadableStream{
+        this._debug("getStream....");
+
         if (!this._startup) throw new Error("not started up");
 
         if (!(infoHash instanceof Buffer) || infoHash.length!=this.KEYLEN)
@@ -344,7 +397,7 @@ export class DisDHT extends EventEmitter{
         });
     }
 
-    receiveOwnMessage( ):Promise<IStorageEntry|null>{
+    public receiveOwnMessage( ):Promise<Buffer|null>{
         return this.receiveMessageFromAuthor();
     }
 
@@ -355,7 +408,7 @@ export class DisDHT extends EventEmitter{
      * @returns 
      */
 
-    async receiveMessageFromAuthor( author?: Buffer):Promise<IStorageEntry|null> {
+    public async receiveMessageFromAuthor( author?: Buffer):Promise<Buffer|null> {
         this._debug("getKeyAuthor....");
         if (!this._startup) throw new Error("not started up");
         const key=this.id;
@@ -368,14 +421,14 @@ export class DisDHT extends EventEmitter{
         if (!(realAuthor instanceof Buffer) || realAuthor.length!=this.KEYLEN)
             throw new Error("invalid author");
 
-        var isv:IStorageEntry|null=null;
+        var isv:IStorageEntry|undefined;
 
         const callback=async (peer:BasePeer)=>{
             try{
                 let fr=await peer.findValueAuthor(realAuthor,KGET);
                 if (fr==null) return null;
                 for (var v of fr.values)
-                    if (isv===null || isv.timestamp<v.entry.timestamp) isv=v.entry;
+                    if (isv===undefined || isv.timestamp<v.entry.timestamp) isv=v.entry;
                 return fr.peers;
             }catch(err){
                 console.log("receiveMessageFromAuthor callback failed");
@@ -384,23 +437,36 @@ export class DisDHT extends EventEmitter{
             }
         }
 
-        await this._closestNodesNavigator(key,KGET,callback);
+        try{
+            await this._onceatime.dec();
+            await this._closestNodesNavigator(key,KGET,callback);
+        }finally{
+            this._onceatime.inc();
+        }
 
-        
-        return isv;
+        if (isv){
+            return isv.value;
+        }else{
+            return null;
+        }
+
     }
 
-    async emitSignedStorageEntry(sse:ISignedStorageEntry):Promise<boolean>{
+
+
+    private async emitSignedStorageEntry(sse:ISignedStorageEntry):Promise<boolean>{
         if (!await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp))
             return false;
-        this.emit(ONMESSAGE,sse);
+        
+        this.emit(ONMESSAGE,{author:sse.entry.author, content:sse.entry.value});
         return true
     }
 
 
-    private async _backgroundIteration(){
+    private async _backgroundIteration():Promise<boolean>{
         this._debug("_backgroundIteration....");   
-        if (!this._startup) return;
+        if (!this._startup) 
+            return false;
 
         const isNewAndMark=async (sse:ISignedStorageEntry)=>{
             return await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp);
@@ -429,9 +495,15 @@ export class DisDHT extends EventEmitter{
             return await peer.findNode(KGET);
         }
 
-        await this._closestNodesNavigator(this.id,KGET,callback);
+        try{
+            await this._onceatime.dec();
+            await this._closestNodesNavigator(this.id,KGET,callback);
+        }finally{
+            this._onceatime.inc();
+        }
 
         this._debug("_backgroundIteration DONE");     
+        return true;
     }
 
 
@@ -458,7 +530,7 @@ export class DisDHT extends EventEmitter{
      * @returns Buffer the new root node infohash
      */
 
-    async btreePut( element:any,
+    public async btreePut( element:any,
                     rootHash:Buffer|null,  
                     compare:(a:any,b:any)=>number,
                     getIndex:(a:any)=>any):Promise<Buffer>{
@@ -480,16 +552,23 @@ export class DisDHT extends EventEmitter{
         const _readNodeBtree=(infoHash:Buffer)=>{
             return this._readNodeBtree(infoHash);
         }
+
+        try{
+            await this._onceatime.dec();
+            var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
+            var r=await bt.put(element)
+    
+            this._debug("btreePut DONE");
+    
+            return r;
+        }finally{
+            this._onceatime.inc();
+        }
         
-        var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
-        var r=await bt.put(element)
 
-        this._debug("btreePut DONE");
-
-        return r;
     }
 
-    async btreeGet(key:any,
+    public async btreeGet(key:any,
                 rootHash:Buffer|null,
                 compare:(a:any,b:any)=>number,
                 getIndex:(a:any)=>any,
@@ -503,8 +582,15 @@ export class DisDHT extends EventEmitter{
             return this._readNodeBtree(infoHash);
         }
 
-        var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
-        await bt.get(key,found);
+        try{
+            await this._onceatime.dec();
+            var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
+            await bt.get(key,found);
+        }finally{
+            this._onceatime.inc();
+        }
+
+
     }
     /*
     protected async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {

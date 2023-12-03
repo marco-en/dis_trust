@@ -1,4 +1,4 @@
-import { DisDHT } from "../disdht";
+import { DisDHT,ImessageEvent } from "../disdht";
 import Storage from "../levelstorage";
 import fs from "node:fs/promises";
 import * as sodium from '../mysodium';
@@ -38,8 +38,8 @@ async function initDHT(name:string,keynum:number,port:number=0,seed?:any,preserv
 
     let dht=new DisDHT(opt); 
 
-    dht.on('message',(sse:ISignedStorageEntry)=>{
-        onMessage(name,dht,sse);
+    dht.on('message',(msg:ImessageEvent)=>{
+        onMessage(name,dht,msg.author,msg.content);
     })
     await dht.startUp();
     console.log('started up %s',name);
@@ -53,13 +53,11 @@ var expectedMsg:Buffer;
 var expectedResolve:any=null;
 var expectedReject:any=null;
 
-function onMessage(name:string,dht:DisDHT,sse:ISignedStorageEntry){
-    if (Buffer.compare(dht.id,sse.entry.key)) 
-        console.log("%s.on message WRONG KEY",name);
+function onMessage(name:string,dht:DisDHT,author:Buffer,value:Buffer){
 
-    console.log("%s.on message: %s %o",name,sse.entry.author.toString("hex").slice(0,6),sse.entry.value);
+    console.log("%s.on message: %s %o",name,author.toString("hex").slice(0,6),value);
     if (expectedResolve){
-        if (expectedDhtName==name && Buffer.compare(expectedMsg,sse.entry.value)==0)
+        if (expectedDhtName==name && Buffer.compare(expectedMsg,value)==0)
             expectedResolve();
         else
         {
@@ -109,10 +107,10 @@ async function fn(){
     await pr;
 
     var res=await dht2.receiveMessageFromAuthor(dht.id);
-    if (res==null || !res.value) 
+    if (res==null) 
         console.log("FAILED");
     else {
-        if (Buffer.compare(msg,res.value)) 
+        if (Buffer.compare(msg,res)) 
             console.log("FAILED DIFFERENT"); 
     } 
 
@@ -127,7 +125,7 @@ async function fn(){
     res=await dht.receiveOwnMessage();
     if (res==null) 
         console.log("FAILED");
-    else if (JSON.stringify(msgown)!=JSON.stringify(decode(res.value)))
+    else if (JSON.stringify(msgown)!=JSON.stringify(decode(res)))
         console.log("FAILED DIFFERENT");
 
     var amsg=encode({
@@ -151,14 +149,13 @@ async function fn(){
     await dhtseed.sendMessage(dhtseed.id,amsg);
     await pr;
 
-    /*
+    
     await testStream(dht,dht2);
 
+    
     const userId="Marco"
 
-    var sui=dht.createSignedUserName(userId);
-
-    if(!await dht.setUser(sui)){
+    if(!await dht.setUser(userId)){
         console.log("failed to set userID");
     }
 
@@ -168,20 +165,24 @@ async function fn(){
     else if (Buffer.compare(ub,dht.id))
         console.log("got wrong user");
 
-    var suis=dht2.createSignedUserName(userId);
 
-    if(await dht2.setUser(suis)){
+    if(await dht2.setUser(userId)){
         console.log("could steal name");
     }
 
+    /*
     await testBTree(dht,dht2);
+    */
 
+    await new Promise((resolve,reject)=>{
+        setTimeout(resolve,100*1000);
+    })
     console.log("shutting down");
     await dhtseed.shutdown();
     await dht.shutdown();
     await dht2.shutdown();
 
-    */
+    
     
     console.log("DONE FINITO FATTO");
 }
@@ -305,6 +306,9 @@ fn()
 .catch(err=>{
     console.log("failed badly");
     console.log(err);
+})
+.finally(()=>{
+    console.log("test USCITO");   
 })
 
 

@@ -1409,6 +1409,8 @@ class VerySimplePeer extends Peer{
         this._simplePeer.on('close',async ()=>{
             await this.destroy();
         })
+        
+
 
         this._debug("VerySimplePeer create, expecting nodeId %s",expectednodeid.toString('hex').slice(0,6));
     }
@@ -1416,6 +1418,11 @@ class VerySimplePeer extends Peer{
 
     protected _sendMsg(msg:Buffer):Promise<void>{
         return new Promise((resolve,reject)=>{
+            if (this._simplePeer.closed) return reject("closed");
+            if (!this._simplePeer.connected) return reject("not connected");
+            if (this._simplePeer.errored)   return reject("errored");
+            if (this._simplePeer.destroyed)  return reject("destroyed");
+            if (!this._simplePeer.writable)   return reject("not writable");
             try{
                 this._simplePeer.send(msg);
                 resolve();
