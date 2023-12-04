@@ -1,9 +1,6 @@
-import {sha} from './mysodium';
-import {encode,decode} from './encoder'
-import {NODESIZE} from './disdht'
+
 
 export interface IBtreeNode{
-    hash:Buffer;
     leaf?:any[];
     children?:Buffer[];
     keys?:any[];
@@ -19,66 +16,46 @@ interface ISplitResult{
 export class DisDhtBtree{
 
     protected _rootHash:Buffer|null;
-    protected _maxNodeSize:number;
     protected _readNode:(infoHash:Buffer)=>Promise<IBtreeNode|null>;
-    protected _saveNode:(node:IBtreeNode)=>Promise<void>;
+    protected _saveNode:(node:IBtreeNode)=>Promise<Buffer>;
     protected _compare:(a:any,b:any)=>number;
     protected _getIndex:(a:any)=>any;
+    protected _mustSplit:(n:any)=>boolean;
 
     constructor(rootHash:Buffer|null,
             readNode:(infoHash:Buffer)=>Promise<IBtreeNode|null>, 
-            saveNode:(node:IBtreeNode)=>Promise<void>,
+            saveNode:(node:IBtreeNode)=>Promise<Buffer>,
             compare:(a:any,b:any)=>number,
             getIndex:(a:any)=>any,
-            maxNodeSize:number=NODESIZE){
+            mustSplit:(n:any)=>boolean){
         this._rootHash=rootHash;
-        this._maxNodeSize=maxNodeSize;
         this._readNode=readNode;
         this._saveNode=saveNode;
         this._compare=compare;
         this._getIndex=getIndex
+        this._mustSplit=mustSplit
     }
 
     protected _makeLeaf(content:any[]):IBtreeNode|null{
-        var hash;
-        try{
-            let enc=encode(content,this._maxNodeSize); 
-            hash=sha(enc);   
-        }catch(err){
-            return null;
-        }
-        return {
-            hash:hash,
+        var r={
             leaf:content
         }
+        if (this._mustSplit(r))
+            return r;
+        else
+            return null;
     }
 
     protected _makeInnerNode(children:Buffer[],keys:any[]):IBtreeNode|null{
         if (children.length!=keys.length+1) throw new Error();
-        var hash;
-        try{
-            let enc=encode([children,keys],this._maxNodeSize); 
-            hash=sha(enc);   
-        }catch(err){
-            return null;
-        }
         return {
-            hash:hash,
             children:children,
             keys:keys
         }
     }
 
     checkNode(node:IBtreeNode):boolean{
-        var hash:Buffer;
-        if (node.leaf){
-            hash=sha(encode(node.leaf,this._maxNodeSize));
-        }else if(node.keys && node.children && !node.leaf){
-            if (node.children.length!=node.keys.length+1) return false;
-            hash=sha(encode([node.children,node.keys],this._maxNodeSize));
-        }else
-            return false;
-        return Buffer.compare(node.hash,hash)==0;
+        return true
     }
 
     async put(toBeInserted:any):Promise<Buffer>{
@@ -86,8 +63,7 @@ export class DisDhtBtree{
             //new tree. Root is a new leaf
             let root=this._makeLeaf([toBeInserted]);
             if (root==null) throw new Error("could not encode root");
-            await this._saveNode(root);
-            this._rootHash=root.hash;
+            this._rootHash=await this._saveNode(root);
         }else{
             //existing tree
             var r=await this._put(this._rootHash,toBeInserted);
@@ -96,8 +72,7 @@ export class DisDhtBtree{
             } else {                    //root split. Root will be a inner tree.
                 let splitRoot = this._makeInnerNode([r.lowerNode,r.higherNode],[r.splitkey]);
                 if (splitRoot==null) throw new Error();
-                await this._saveNode(splitRoot);
-                this._rootHash=splitRoot.hash;
+                this._rootHash=await this._saveNode(splitRoot);
             }
         }
         return this._rootHash;
@@ -130,8 +105,7 @@ export class DisDhtBtree{
         let r=this._makeLeaf(newLeaf);
 
         if (r) { // no split
-            await this._saveNode(r);
-            return r.hash;
+            return await this._saveNode(r);
         }
 
         // split in half
@@ -146,13 +120,13 @@ export class DisDhtBtree{
             throw new Error("could not split the leaf")
         }
 
-        await this._saveNode(lowerNode);
-        await this._saveNode(higherNode);
+        var lowHash=await this._saveNode(lowerNode);
+        var highHash=await this._saveNode(higherNode);
 
         return {
             splitkey:splitkey,
-            lowerNode:lowerNode.hash,
-            higherNode:higherNode.hash
+            lowerNode:lowHash,
+            higherNode:highHash
         }
     }
 
@@ -174,13 +148,16 @@ export class DisDhtBtree{
 
         var subinner=await recur();
 
+        
+
+
         if (subinner instanceof Buffer){
             let nc=[...node.children];
             nc[i]=subinner;
             let inner=this._makeInnerNode(nc,node.keys);
             if (inner==null) throw new Error();
-            await this._saveNode(inner);
-            return inner.hash;
+            let h=await this._saveNode(inner);
+            return h;
         }else{
             let splitPos=Math.floor(node.keys.length/2);
             let splitkey=node.keys[splitPos]
@@ -188,12 +165,12 @@ export class DisDhtBtree{
             if (!lowerNode) throw new Error();
             let higherNode=this._makeInnerNode(node.children.splice(splitPos),node.keys.splice(splitPos+1)); 
             if (!higherNode) throw new Error();
-            await this._saveNode(lowerNode);
-            await this._saveNode(higherNode);
+            let lh=await this._saveNode(lowerNode);
+            let hh=await this._saveNode(higherNode);
             return {
                 splitkey:splitkey,
-                lowerNode:lowerNode.hash,
-                higherNode:higherNode.hash,
+                lowerNode:lh,
+                higherNode:hh,
             }
         } 
     }

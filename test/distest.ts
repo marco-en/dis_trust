@@ -170,21 +170,20 @@ async function fn(){
         console.log("could steal name");
     }
 
-    /*
+    
     await testBTree(dht,dht2);
-    */
+    
 
     await new Promise((resolve,reject)=>{
         setTimeout(resolve,100*1000);
     })
-    
+
     console.log("shutting down");
+
     await dhtseed.shutdown();
     await dht.shutdown();
     await dht2.shutdown();
 
-    
-    
     console.log("DONE FINITO FATTO");
 }
 
@@ -264,8 +263,9 @@ function random():number
     return result;
 }
 
-const BTREEITER=5000;
+const BTREEITER=100;
 const BTREESEED=2343;
+const FILLER=Buffer.alloc(2000);
 
 async function testBTree(dht:DisDHT,dht2:DisDHT){
     var rootHash:Buffer|null=null;
@@ -273,7 +273,7 @@ async function testBTree(dht:DisDHT,dht2:DisDHT){
     var map=new Map<number,number>();
 
     for(let i=0;i<BTREEITER;i++){
-        let r={k:random(),v:random()};
+        let r={k:random(),v:random(),filler:FILLER};
         map.set(r.k,r.v);
         rootHash=await dht.btreePut(r, rootHash, compare, getIndex);
     }

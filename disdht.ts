@@ -18,7 +18,6 @@ const ZEROBUF=Buffer.alloc(0);
 const STREAMHIGH=5;
 const BACKGROUND_PAUSE=60*1000;
 
-
 interface ServerIp {
     port: number,
     host?: string
@@ -37,6 +36,15 @@ const ONMESSAGE="message";
 export interface IDHTMessage{
     author:Buffer,
     content:Buffer
+}
+
+function mustSplit(n:any){
+    try{
+        encode(n,NODESIZE);
+        return true;
+    }catch(err){
+        return false;
+    }
 }
 
 export class DisDHT extends EventEmitter{
@@ -316,7 +324,7 @@ export class DisDHT extends EventEmitter{
     }
 
     protected async _getNode(infoHash:Buffer){
-        var r:IMerkleNode|null=null;
+        var r:any=null;
 
         var lr=await this.localPeer.retreiveBuffer(infoHash,0);
         if (!Array.isArray(lr)) 
@@ -528,7 +536,7 @@ export class DisDHT extends EventEmitter{
 
             let buffer=encode(node,MAXMSGSIZE);
             let isb=this._peerFactory.createSignedBuffer(buffer);
-            await this.localPeer.storeBuffer (isb,0);
+            await this.localPeer.storeBuffer(isb,0);
 
             const callback=async (peer:BasePeer)=>{
                 let f=await peer.storeBuffer(isb,KPUT);
@@ -537,6 +545,8 @@ export class DisDHT extends EventEmitter{
             }
 
             await this._closestNodesNavigator(isb.infoHash,KGET,callback);
+
+            return isb.infoHash;
         }
 
         const _readNodeBtree=(infoHash:Buffer)=>{
@@ -545,7 +555,7 @@ export class DisDHT extends EventEmitter{
 
         try{
             await this._onceatime.dec();
-            var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
+            var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,mustSplit);
             var r=await bt.put(element)
     
             this._debug("btreePut DONE");
@@ -573,7 +583,7 @@ export class DisDHT extends EventEmitter{
 
         try{
             await this._onceatime.dec();
-            var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,NODESIZE);
+            var bt=new DisDhtBtree(rootHash,_readNodeBtree,_saveNode,compare,getIndex,mustSplit);
             await bt.get(key,found);
         }finally{
             this._onceatime.inc();
