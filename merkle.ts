@@ -1,7 +1,7 @@
 
 
 export interface IMerkleNode{
-    infoHash:Buffer;
+    //infoHash:Buffer;
     chunk?:Buffer;
     children?:Buffer[];
 }
@@ -36,12 +36,12 @@ export class MerkleWriter{
     _hashSize:number;
     _nodeSize:number;
     _innerNodeMaxChildren:number;
-    _emit:(node:IMerkleNode)=>Promise<void>;
+    _emit:(node:IMerkleNode)=>Promise<Buffer>;
     _pendingChunk=ZEROBUF;
     _tree:MerkleNode[]=[];
     _lastEmitted:Buffer|undefined;
 
-    constructor(emit:(node:IMerkleNode)=>Promise<void>,hash:(msg:Buffer)=>Buffer,nodeSize:number){
+    constructor(emit:(node:IMerkleNode)=>Promise<Buffer>,hash:(msg:Buffer)=>Buffer,nodeSize:number){
         this._hash=hash;
         this._hashSize=hash(Buffer.alloc(1)).length;
         this._nodeSize=nodeSize;
@@ -60,10 +60,8 @@ export class MerkleWriter{
     }
 
     async _newLeaf(chunk:Buffer){
-        var ih=this._hash(chunk);
-        this._lastEmitted=ih;
-        await this._emit({infoHash:ih,chunk:chunk});
-        await this._pushInTree(ih,0);
+        this._lastEmitted=await this._emit({chunk:chunk});
+        await this._pushInTree(this._lastEmitted,0);
     }
 
     async _pushInTree(infoHash:Buffer,level:number){
@@ -92,10 +90,8 @@ export class MerkleWriter{
     }
 
     async _emitNode(n:MerkleNode,level:number){
-        let newIH=this._hash(Buffer.concat(n.children));
-        this._lastEmitted=newIH;
-        await this._emit({infoHash:newIH,children:n.children});
-        await this._pushInTree(newIH,level+1);
+        this._lastEmitted=await this._emit({children:n.children});
+        await this._pushInTree(this._lastEmitted,level+1);
         n.reset();
     }
 
@@ -126,16 +122,16 @@ export class MerkleReader{
         if (n.chunk && n.children)
             return false;
         if (n.chunk){
-            let h=this._hash(n.chunk);
-            if (Buffer.compare(h,n.infoHash))
-                return false;
+            //let h=this._hash(n.chunk);
+            //if (Buffer.compare(h,n.infoHash))
+            //    return false;
             await this._emitchunk(n.chunk);
             return true;
         }
         else if(n.children){
-            let h=this._hash(Buffer.concat(n.children));
-            if (Buffer.compare(h,n.infoHash))
-                return false;
+            //let h=this._hash(Buffer.concat(n.children));
+            //if (Buffer.compare(h,n.infoHash))
+            //    return false;
             for(let b of n.children)
                 if(!await this.check(b))
                     return false;

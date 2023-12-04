@@ -10,7 +10,7 @@ import {encode,decode} from './encoder'
 import {IMerkleNode} from './merkle';
 import {IBtreeNode} from './DisDhtBtree'
 
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageBtreeNode,IStorageMerkleNode,ISignedStorageBtreeNode,IStorage } from './IStorage.js'
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,IStorage,ISignedBuffer } from './IStorage.js'
 
 
 const VERSION=1;
@@ -32,6 +32,7 @@ const DEBUG=1;
 export const MAX_TS_DIFF=DEBUG*5*60000+2*60*1000;
 const REPLYTIMEOUT=DEBUG*60000+5000;
 const INTRODUCTIONTIMEOUT=DEBUG*60000+2*1000;
+const EMPTYBUFFER=Buffer.alloc(0);
 
 
 interface Introduction{
@@ -55,15 +56,12 @@ enum MessageType{
     // WebRTC
     signal,
     signalled,
-    // merkle
-    storemerkle,
-    findmerkle,
     //UserId
     setUserId,
     getUserId,
-    // BTree
-    storeBTreeNode,
-    findBTreeNode,
+    // infoHash storage
+    storeBuffer,
+    retreiveBuffer,
 }
 
 
@@ -78,12 +76,11 @@ enum MessageType{
  */
 
 interface MessageEnvelope{
-
     /** version */
     v:number, // VERSION
     /** author */
     a:Buffer, //author
-    /**  */
+    /** MessageType enum */
     m:MessageType,
     /** payload */
     p:any, 
@@ -95,8 +92,6 @@ interface MessageEnvelope{
     s?:Buffer
 }
 
-
-
 export interface IFindResult{
     peers:BasePeer[];
     values:ISignedStorageEntry[];
@@ -106,8 +101,6 @@ export interface IReceiveMessagesResult{
     sses:ISignedStorageEntry[];
     nextTs:number;
 }
-
-
 
 export interface IGetUserResult{
     peers:BasePeer[];
@@ -167,6 +160,7 @@ export class BasePeer extends EventEmitter implements Contact{
     get id():Buffer{
         throw new Error("Abstract");
     }
+
     get vectorClock() {return 0};
 
     get idString():string{
@@ -182,29 +176,37 @@ export class BasePeer extends EventEmitter implements Contact{
     get peerfactoryId():Buffer{
         return this._peerFactory.id;
     }
+
     async destroy(){
         this._debug("destroy");
         this._peerFactory.destryedPeer(this);
         this._PeerStatus=PeerStatus.destroyed;
     }
+
     async added(status:boolean):Promise<void> {
         throw new Error("Abstract");
     }
+
     async ping():Promise<boolean>{
         throw new Error("Abstract");
     }
+
     async store(entry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
         throw new Error("Abstract");
     }
-    async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
-        throw new Error("Abstract");        
+
+    async storeBuffer(isb:ISignedBuffer,k:number):Promise<BasePeer[]>{
+        throw new Error("Abstract");
     }
-    async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
-        throw new Error("Abstract");        
+
+    async retreiveBuffer(infoHash:Buffer,k:number):Promise<ISignedBuffer|BasePeer[]>{
+        throw new Error("Abstract");
     }
+
     async findValueAuthor(author:Buffer,k:number):Promise<IFindResult|null>{
         throw new Error("Abstract");
     }
+
     async receiveMessages(ts:number):Promise<IReceiveMessagesResult|null>{
         throw new Error("Abstract");
     }
@@ -212,18 +214,15 @@ export class BasePeer extends EventEmitter implements Contact{
     async findNode(k:number):Promise<BasePeer[]>{
         throw new Error("Abstract");
     }
+
     async setUserId(signedUserId:ISignedUserId,k:number):Promise<BasePeer[]|false|null>{
         throw new Error("Abstract");
     }
+
     async getUserId(userHash:Buffer,k:number):Promise<IGetUserResult|null>{
         throw new Error("Abstract");
     }
-    async findBTreeNode(infoHash:Buffer,k:number):Promise<ISignedStorageBtreeNode|BasePeer[]>{
-        throw new Error("Abstract");
-    }
-    async storeBTreeNode(btn:ISignedStorageBtreeNode,k:number):Promise<BasePeer[]|null>{
-        throw new Error("Abstract");
-    }
+
     async shutdown(){
     }
 }
@@ -237,6 +236,7 @@ class MeAsPeer extends BasePeer{
     get id():Buffer{
         return this._peerFactory.id;
     }
+
     async ping():Promise<boolean>{
         try{
             this._debug("ping ...");
@@ -246,46 +246,29 @@ class MeAsPeer extends BasePeer{
         }
 
     }
+
     async added(status:boolean):Promise<void> { }
 
 
+    async storeBuffer(isb:ISignedBuffer,k:number):Promise<BasePeer[]>{
+        try{
+            this._debug("storeBuffer MeAsPeer %s...",isb.infoHash.toString('hex'));
+            await this._storage.storeBuffer(isb);
+            return this._peerFactory.findClosestPeers(isb.infoHash,k); 
+        }  
+        finally{
+            this._debug("storeBuffer MeAsPeer DONE");
+        }
+    }
 
-    async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
+    async retreiveBuffer(infoHash:Buffer,k:number):Promise<ISignedBuffer|BasePeer[]>{
         try{
-            this._debug("storeMerkleNode ...");
-            await this._storage.storeMerkleNode(signed);
-            return this._peerFactory.findClosestPeers(signed.entry.node.infoHash,k);   
-        }finally{
-            this._debug("storeMerkleNode DONE");
-        }
-    }
-    async storeBTreeNode(sbtn:ISignedStorageBtreeNode,k:number):Promise<BasePeer[]|null>{
-        try{
-            this._debug("storeMerkleNode ...");
-            await this._storage.storeBTreeNode(sbtn);
-            return this._peerFactory.findClosestPeers(sbtn.entry.node.hash,k);   
-        }finally{
-            this._debug("storeMerkleNode DONE");
-        }
-    }
-    async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
-        try{
-            this._debug("findMerkleNode ...");
-            var mn=await this._storage.getMerkleNode(key);
-            if (mn) return mn;
-            return this._peerFactory.findClosestPeers(key,k);
-        }finally{
-            this._debug("findMerkleNode DONE");
-        }
-    }
-    async findBTreeNode(infoHash:Buffer,k:number):Promise<ISignedStorageBtreeNode|BasePeer[]>{
-        try{
-            this._debug("findBTreeNode ...");
-            var mn=await this._storage.getBTreeNode(infoHash);
+            this._debug("retreiveBuffer MeAsPeer %s...",infoHash.toString('hex'));
+            var mn=await this._storage.retreiveBuffer(infoHash);
             if (mn) return mn;
             return this._peerFactory.findClosestPeers(infoHash,k);
         }finally{
-            this._debug("findBTreeNode DONE");
+            this._debug("retreiveBuffer DONE");
         }
     }
 
@@ -299,6 +282,7 @@ class MeAsPeer extends BasePeer{
             this._debug("store DONE");
         }
     }
+
     async receiveMessages(ts:number):Promise<IReceiveMessagesResult|null>{
         try{
             this._debug("findValues ...");
@@ -708,63 +692,50 @@ class Peer extends BasePeer  {
         this._debug("_onGetUserId DONE");
     }
 
-    /**
-     * 
-     * @param signed 
-     * @param k 
-     * @return close nodes
-     */
-
-    async storeMerkleNode(signed:ISignedStorageMerkleNode,k:number):Promise<BasePeer[]|null>{
-        this._debug("storeMerkleNode...");
+    async storeBuffer(isb:ISignedBuffer,k:number):Promise<BasePeer[]>{
+        this._debug("storeBuffer %s...",isb.infoHash.toString('hex'));
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var res=await this._requestToPeer({
-            entry:signed,
+            isb:isb,
             k:k
-        },MessageType.storemerkle);
-        if (!res) return null;
+        },MessageType.storeBuffer);
+        if (!res) return [];
         var r=await this._nodeids2peers(res.p.ids);
-        this._debug("storeMerkleNode done");
+        this._debug("storeBuffer done");
         return r;
     }
 
-    protected async _onStoreMerkleNode(merkleMessage:MessageEnvelope){
-        this._debug("_onStoreMerkleNode ....");
+    protected async _onStoreBuffer(bufferMessage:MessageEnvelope){
+        this._debug("_onStoreBuffer ....");
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var signed:ISignedStorageMerkleNode=merkleMessage.p.entry;
-        if (!this._peerFactory.verifySignedMerkleNode(signed)){
-            this._maliciousPeer("invalid merkle node received");
+        var signed:ISignedBuffer=bufferMessage.p.isb;
+        var k:number=bufferMessage.p.K;
+        if (!this._peerFactory.verifySignedBuffer(signed)){
+            this._maliciousPeer("invalid buffer received");
             return;
         }
-        var k:number=merkleMessage.p.K;
-        await this._storage.storeMerkleNode(signed);
-        var ids=this._onFindNodeInner(signed.entry.node.infoHash,k)
-        await this._replyToPeer({ids:ids},merkleMessage);
-        this._debug("_onStoreMerkleNode done");
+        await this._storage.storeBuffer(signed);
+        var ids=this._onFindNodeInner(signed.infoHash,k)
+        await this._replyToPeer({ids:ids},bufferMessage);
+        this._debug("_onStoreBuffer done");
     }
 
-    /**
-     * 
-     * @param key 
-     * @param k 
-     */
-
-    async findMerkleNode(key:Buffer,k:number):Promise<ISignedStorageMerkleNode|BasePeer[]>{
-        this._debug("findMerkleNode...");
+    async retreiveBuffer(infoHash:Buffer,k:number):Promise<ISignedBuffer|BasePeer[]>{
+        this._debug("retreiveBuffer %s...",infoHash.toString('hex'));
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         var res=await this._requestToPeer({
-            key:key,
+            infoHash:infoHash,
             k:k
-        },MessageType.findmerkle);
+        },MessageType.retreiveBuffer);
         if (res==null) return [];
         var r;
         if (res.p.ids) {
-            this._debug("findMerkleNode not found Node");
+            this._debug("retreiveBuffer not found Node");
             r=await this._nodeids2peers(res.p.ids);
-        }else if (res.p.node) {
-            this._debug("findMerkleNode found Node");
-            r=res.p.node;
-            if(!this._peerFactory.verifySignedMerkleNode(r)){
+        }else if (res.p.isb) {
+            this._debug("retreiveBuffer found Node");
+            r=res.p.isb;
+            if(!this._peerFactory.verifySignedBuffer(r)){
                 await this._maliciousPeer("invalid signature in the reply");
                 r=[];                
             }
@@ -772,85 +743,25 @@ class Peer extends BasePeer  {
             await this._maliciousPeer("invalid reply");
             r=[];
         }
-        this._debug("findMerkleNode DONE");
+        this._debug("retreiveBuffer DONE");
         return r;
     }
 
-    protected async _onfindMerkleNode(findMerkle:MessageEnvelope){
-        this._debug("_onfindMerkleNode...");
+    protected async _onRetreiveBuffer(findBuffer:MessageEnvelope){
+        this._debug("_onRetreiveBuffer...");
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var key:Buffer=findMerkle.p.key;
-        var k:number=findMerkle.p.k;
-        var mn=await this._storage.getMerkleNode(key);
-        if (mn===undefined){
-            var ids=this._onFindNodeInner(key,k)
-            await this._replyToPeer({ids:ids},findMerkle);
+        var infoHash:Buffer=findBuffer.p.infoHash;
+        var k:number=findBuffer.p.k;
+        var isb=await this._storage.retreiveBuffer(infoHash);
+        if (!isb){
+            var ids=this._onFindNodeInner(infoHash,k)
+            await this._replyToPeer({ids:ids},findBuffer);
+            this._debug("_onRetreiveBuffer found");
         }else{
-            await this._replyToPeer({node:mn},findMerkle);
+            await this._replyToPeer({isb:isb},findBuffer);
+            this._debug("_onRetreiveBuffer NOT found");
         }
-        this._debug("_onfindMerkleNode DONE");
     }
-
-    async findBTreeNode(infoHash:Buffer,k:number):Promise<ISignedStorageBtreeNode|BasePeer[]>{
-        this._debug("findBTreeNode...");
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var res=await this._requestToPeer({infohash:infoHash,k:k},MessageType.findBTreeNode);
-        if (res==null) return [];
-        var r;
-        if (res.p.ids){
-            this._debug("findBTreeNode not found Node");
-            r=await this._nodeids2peers(res.p.ids);            
-        }else if (res.p.node){
-            if (!this._peerFactory.verifySignedBtreeNode(res.p.node)){
-                await this._maliciousPeer("invalid reply");
-                r=[];                
-            }else{
-                r=res.p.node;
-            }
-        }else{
-            await this._maliciousPeer("invalid reply");
-            r=[];            
-        }
-        this._debug("findBTreeNode DONE");
-        return r;
-    }
-
-    protected async _onFindBTreeNode(findBTNode:MessageEnvelope){
-        this._debug("_onFindBTreeNode...");
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var infohash=findBTNode.p.infohash;
-        var k=findBTNode.p.k;
-        var node=await this._storage.getBTreeNode(infohash);
-        if (node){
-            await this._replyToPeer({node:node},findBTNode); 
-        }else{
-            var ids=this._onFindNodeInner(infohash,k)
-            await this._replyToPeer({ids:ids},findBTNode);            
-        }
-        this._debug("_onFindBTreeNode DONE");
-    }
-
-    async storeBTreeNode(btn:ISignedStorageBtreeNode,k:number):Promise<BasePeer[]|null>{
-        this._debug("storeBTreeNode...");
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var res=await this._requestToPeer({btn:btn,k:k},MessageType.storeBTreeNode);
-        if (res==null) return [];
-        var r=await this._nodeids2peers(res.p.ids);
-        this._debug("storeBTreeNode DONE");
-        return r;
-    }
-
-    protected async _onStoreBTreeNode(storeBTNode:MessageEnvelope){
-        this._debug("_onStoreBTreeNode...");
-        if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var btn:ISignedStorageBtreeNode=storeBTNode.p.btn;
-        var k:number=storeBTNode.p.k;
-        await this._storage.storeBTreeNode(btn);
-        var ids=this._onFindNodeInner(btn.entry.node.hash,k)
-        await this._replyToPeer({ids:ids},storeBTNode);     
-        this._debug("_onStoreBTreeNode DONE");
-    }
-
 
     /**
      * 
@@ -1079,20 +990,16 @@ class Peer extends BasePeer  {
                 return await this._onRequestSignalled(messageEnvelope);
             case MessageType.add:
                 return await this._onAdded(messageEnvelope);
-            case MessageType.storemerkle:
-                return await this._onStoreMerkleNode(messageEnvelope);
-            case MessageType.findmerkle:
-                return await this._onfindMerkleNode(messageEnvelope);
             case MessageType.setUserId:
                 return await this._onSetUserId(messageEnvelope);
             case MessageType.getUserId:
                 return await this._onGetUserId(messageEnvelope);
             case MessageType.shutdown:
                 return await this._onShutdown(messageEnvelope);
-            case MessageType.findBTreeNode:
-                return await this._onFindBTreeNode(messageEnvelope);
-            case MessageType.storeBTreeNode:
-                return await this._onStoreBTreeNode(messageEnvelope)
+            case MessageType.retreiveBuffer:
+                return await this._onRetreiveBuffer(messageEnvelope);
+            case MessageType.storeBuffer:
+                return await this._onStoreBuffer(messageEnvelope);
             default:
                 await this._maliciousPeer("invalid message type");
         }
@@ -1570,6 +1477,7 @@ export class PeerFactory extends EventEmitter{
     }
 
     findClosestPeers(key:Buffer,k:number):BasePeer[]{
+        if (!k) return [];
         return this._kbucket.closest(key,k) as any;
     }
 
@@ -1609,38 +1517,28 @@ export class PeerFactory extends EventEmitter{
         return this.verify(encode(signedentry.entry,MAXMSGSIZE),signedentry.signature,signedentry.entry.author);
     }
 
-    createSignedMerkleNode(node:IMerkleNode):ISignedStorageMerkleNode{
-        var r:IStorageMerkleNode={
+    createSignedBuffer(buffer:Buffer):ISignedBuffer{
+        var infoHash=sodium.sha(buffer);
+        var r:ISignedBuffer={
             author:this.id,
             timestamp:Date.now(),
-            version:VERSION,            
-            node:node,
+            version:VERSION, 
+            infoHash:infoHash,
+            data:buffer,
+            signature:EMPTYBUFFER
         }
-        return {
-            entry:r,
-            signature:this.sign(encode(r,MAXMSGSIZE))
-        }
+        r.signature=this.sign(encode(r,MAXMSGSIZE))
+        return r;
     }
 
-    verifySignedMerkleNode(signed:ISignedStorageMerkleNode):boolean{
-        return this.verify(encode(signed.entry,MAXMSGSIZE),signed.signature,signed.entry.author);
-    }
-
-    createSignedBtreeNode(node:IBtreeNode):ISignedStorageBtreeNode{
-        var r:IStorageBtreeNode={
-            author:this.id,
-            timestamp:Date.now(),
-            version:VERSION,
-            node:node
-        }
-        return {
-            entry:r,
-            signature:this.sign(encode(r,MAXMSGSIZE))            
-        }
-    }
-
-    verifySignedBtreeNode(signed:ISignedStorageBtreeNode):boolean{
-        return this.verify(encode(signed.entry,MAXMSGSIZE),signed.signature,signed.entry.author)
+    verifySignedBuffer(isb:ISignedBuffer):boolean{
+        var ia=sodium.sha(isb.data);
+        if (Buffer.compare(ia,isb.infoHash)) return false;
+        var sig=isb.signature;
+        isb.signature=EMPTYBUFFER;
+        var r=this.verify(encode(isb,MAXMSGSIZE),sig,isb.author);
+        isb.signature=sig;
+        return r;
     }
 
     createSignedUserName(userId:string):ISignedUserId{

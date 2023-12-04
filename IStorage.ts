@@ -1,5 +1,6 @@
-import { IMerkleNode } from './merkle.js';
+/*import { IMerkleNode } from './merkle.js';
 import {IBtreeNode} from './DisDhtBtree.js';
+*/
 
 export interface IStorageEntryBase{
     author:Buffer, 
@@ -17,12 +18,10 @@ export interface IUserId extends IStorageEntryBase{
     userHash:Buffer,
 }
 
-export interface IStorageMerkleNode extends IStorageEntryBase{
-    node:IMerkleNode
-}
-
-export interface IStorageBtreeNode extends IStorageEntryBase{
-    node: IBtreeNode
+export interface ISignedBuffer extends IStorageEntryBase{
+    infoHash:Buffer,
+    data:Buffer,
+    signature:Buffer,
 }
 
 export interface ISignedUserId{
@@ -35,16 +34,6 @@ export interface ISignedStorageEntry{
     signature:Buffer
 }
 
-export interface ISignedStorageMerkleNode{
-    entry:IStorageMerkleNode,
-    signature:Buffer,
-}
-
-
-export interface ISignedStorageBtreeNode{
-    entry:IStorageBtreeNode,
-    signature:Buffer,  
-}
 
 export enum Trust{
     neutral=0,
@@ -58,11 +47,8 @@ export interface IStorage{
     retreiveAuthor:(key:Buffer,author:Buffer)=>Promise<ISignedStorageEntry|null>,
     retreiveAnyAuthor:(key: Buffer,tsGt:number, maxNumRecords:number )=>Promise<ISignedStorageEntry[]>,
 
-    storeMerkleNode:(snm:ISignedStorageMerkleNode)=>Promise<void>,
-    getMerkleNode:(infoHash:Buffer)=>Promise<ISignedStorageMerkleNode|undefined>,
-
-    storeBTreeNode:(sbtn:ISignedStorageBtreeNode)=>Promise<void>,
-    getBTreeNode:(infoHash:Buffer)=>Promise<ISignedStorageBtreeNode|undefined>
+    storeBuffer:(isb:ISignedBuffer)=>Promise<void>,
+    retreiveBuffer:(infoHash:Buffer)=>Promise<ISignedBuffer|null>
 
     setUserId:(signeUserId:ISignedUserId)=>Promise<boolean>,
     getUserId:(userHash:Buffer)=>Promise<ISignedUserId|undefined>,

@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,ISignedStorageMerkleNode,IStorageMerkleNode,IStorage, ISignedStorageBtreeNode } from './IStorage'
+import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,IStorage, ISignedBuffer } from './IStorage'
 import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE, IReceiveMessagesResult} from './peer';
 import Debug from 'debug';
 import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle';
@@ -8,7 +8,7 @@ import {DisDhtBtree,IBtreeNode} from './DisDhtBtree';
 import {sha} from './mysodium';
 import Semaphore from './semaphore';
 import {EventEmitter} from 'events'
-import { encode } from './encoder';
+import { encode,decode } from './encoder';
 
 const KPUT = 20;
 const KGET = KPUT*4;
@@ -34,7 +34,7 @@ interface DisDHToptions {
 
 const ONMESSAGE="message";
 
-export interface ImessageEvent{
+export interface IDHTMessage{
     author:Buffer,
     content:Buffer
 }
@@ -46,7 +46,6 @@ export class DisDHT extends EventEmitter{
     private _kbucket: Kbucket;
     private _debug:Debug.Debugger;
     private _startup:boolean=false;
-    private _lastMessage:number=0;
     public _storage:IStorage;
     private _intervalBackgroundProcess:any;
     private _onceatime:Semaphore;
@@ -69,8 +68,12 @@ export class DisDHT extends EventEmitter{
         this._debug("created");
     }
 
-    get id () :Buffer {
+    get id():Buffer {
         return this._peerFactory.id;
+    }
+
+    get localPeer():BasePeer{
+        return this._peerFactory._meAsPeer;
     }
 
     async startUp() {
@@ -283,12 +286,16 @@ export class DisDHT extends EventEmitter{
 
             if (!this._startup) throw new Error("not started up");
             const emit = async (n:IMerkleNode) => { 
-                let smn = this._peerFactory.createSignedMerkleNode(n);
+                this._debug("putStream node %s...");
+                let isb = this._peerFactory.createSignedBuffer(encode(n,MAXMSGSIZE));
+
+                await this.localPeer.storeBuffer(isb,0);
+
                 const callback = async (peer:BasePeer) => {
-                    //await peer.storeMerkleNode(smn,KPUT);
-                    return await peer.storeMerkleNode(smn,KPUT);
+                    return await peer.storeBuffer(isb,KPUT);
                 }
-                await this._closestNodesNavigator(n.infoHash,KPUT,callback);
+                await this._closestNodesNavigator(isb.infoHash,KPUT,callback);
+                return isb.infoHash;
             }
             const mw = new MerkleWriter(emit,sha,NODESIZE);
             let reader = readableStream.getReader();
@@ -308,25 +315,23 @@ export class DisDHT extends EventEmitter{
 
     }
 
-    protected async _getMerkleNode(infoHash:Buffer):Promise<IStorageMerkleNode|undefined>{
-        if (!this._startup) throw new Error("not started up");
-        var r:IStorageMerkleNode|undefined;
+    protected async _getNode(infoHash:Buffer){
+        var r:IMerkleNode|null=null;
+
+        var lr=await this.localPeer.retreiveBuffer(infoHash,0);
+        if (!Array.isArray(lr)) 
+            return decode(lr.data);
 
         const callback=async (peer:BasePeer)=>{
-            let f=await peer.findMerkleNode(infoHash,KGET);
+            let f=await peer.retreiveBuffer(infoHash,KGET);
             if (Array.isArray(f))   
                 return f;
-            r=f.entry;
+            this.localPeer.storeBuffer(f,0);
+            r=decode(f.data);
             return null;
         } 
 
-        try{
-            await this._onceatime.dec();
-            await this._closestNodesNavigator(infoHash,KGET,callback);
-        }finally{
-            this._onceatime.inc();
-        }
-
+        await this._closestNodesNavigator(infoHash,KGET,callback);
         return r;
     }
 
@@ -359,9 +364,9 @@ export class DisDHT extends EventEmitter{
 
         const read=async (ih:Buffer)=>{
             if (cancelled) return;
-            var r = await this._getMerkleNode(ih);
+            var r = await this._getNode(ih);
             if (!r) return;
-            return r.node;
+            return r
         };
 
         const mr=new MerkleReader(read,sha,emitchunk);
@@ -452,8 +457,6 @@ export class DisDHT extends EventEmitter{
 
     }
 
-
-
     private async emitSignedStorageEntry(sse:ISignedStorageEntry):Promise<boolean>{
         if (!await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp))
             return false;
@@ -461,7 +464,6 @@ export class DisDHT extends EventEmitter{
         this.emit(ONMESSAGE,{author:sse.entry.author, content:sse.entry.value});
         return true
     }
-
 
     private async _backgroundIteration():Promise<boolean>{
         this._debug("_backgroundIteration....");   
@@ -507,20 +509,6 @@ export class DisDHT extends EventEmitter{
     }
 
 
-    private async _readNodeBtree(infoHash:Buffer) {
-        var r=null;
-        const callback=async (peer:BasePeer)=>{
-            let f=await peer.findBTreeNode (infoHash,KGET);
-            if (Array.isArray(f))
-                return f;
-            r=f.entry.node;
-            return null;
-        } 
-        await this._closestNodesNavigator(infoHash,KGET,callback);
-        return r;
-    } 
-
-
     /**
      * btreePut put an item in a bTree. 
      * @param element 
@@ -538,19 +526,21 @@ export class DisDHT extends EventEmitter{
         
         const _saveNode= async(node:IBtreeNode)=>{
 
-            var sbt=this._peerFactory.createSignedBtreeNode(node);
+            let buffer=encode(node,MAXMSGSIZE);
+            let isb=this._peerFactory.createSignedBuffer(buffer);
+            await this.localPeer.storeBuffer (isb,0);
 
             const callback=async (peer:BasePeer)=>{
-                let f=await peer.storeBTreeNode(sbt,KPUT);
+                let f=await peer.storeBuffer(isb,KPUT);
                 if (!f) return [];
                 return f;
             }
 
-            await this._closestNodesNavigator(sbt.entry.node.hash,KGET,callback);
+            await this._closestNodesNavigator(isb.infoHash,KGET,callback);
         }
 
         const _readNodeBtree=(infoHash:Buffer)=>{
-            return this._readNodeBtree(infoHash);
+            return this._getNode(infoHash);
         }
 
         try{
@@ -565,7 +555,6 @@ export class DisDHT extends EventEmitter{
             this._onceatime.inc();
         }
         
-
     }
 
     public async btreeGet(key:any,
@@ -579,7 +568,7 @@ export class DisDHT extends EventEmitter{
         }
 
         const _readNodeBtree=(infoHash:Buffer)=>{
-            return this._readNodeBtree(infoHash);
+            return this._getNode(infoHash);
         }
 
         try{
@@ -592,22 +581,9 @@ export class DisDHT extends EventEmitter{
 
 
     }
-    /*
-    protected async _closestNodes(key: Buffer, k: number): Promise<BasePeer[]> {
-        this._debug("_closestnodes.....");
 
-        const callback=async (peer:BasePeer)=>{
-            return await peer.findNode(key,k);
-        }
-
-        var r=await this._closestNodesNavigator(key,k,callback);
-
-        this._debug("_closestnodes DONE");
-        return r;
-    }
-    */
     protected async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null>): Promise<BasePeer[]> {
-        this._debug("_closestNodesNavigator.....");
+        this._debug("_closestNodesNavigator to %s...",key.toString('hex'));
         if (k<1) throw new Error("Invalid K");
         var query:Map<String,boolean>=new Map();
         var kb=new Kbucket({localNodeId:key,numberOfNodesPerKBucket:k});
@@ -636,6 +612,7 @@ export class DisDHT extends EventEmitter{
             }
         }
         var r=kb.closest(key,k);
+        this._debug("_closestNodesNavigator to %s DONE",key.toString('hex'))
         return r as any;
     }
 

@@ -1,4 +1,4 @@
-import { DisDHT,ImessageEvent } from "../disdht";
+import { DisDHT,IDHTMessage } from "../disdht";
 import Storage from "../levelstorage";
 import fs from "node:fs/promises";
 import * as sodium from '../mysodium';
@@ -38,7 +38,7 @@ async function initDHT(name:string,keynum:number,port:number=0,seed?:any,preserv
 
     let dht=new DisDHT(opt); 
 
-    dht.on('message',(msg:ImessageEvent)=>{
+    dht.on('message',(msg:IDHTMessage)=>{
         onMessage(name,dht,msg.author,msg.content);
     })
     await dht.startUp();
@@ -177,6 +177,7 @@ async function fn(){
     await new Promise((resolve,reject)=>{
         setTimeout(resolve,100*1000);
     })
+    
     console.log("shutting down");
     await dhtseed.shutdown();
     await dht.shutdown();

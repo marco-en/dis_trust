@@ -1,5 +1,5 @@
 import Level from 'level';
-import {ISignedUserId,ISignedStorageEntry,ISignedStorageMerkleNode,Trust,IStorage,ISignedStorageBtreeNode } from './IStorage'
+import {ISignedUserId,ISignedStorageEntry,Trust,IStorage, ISignedBuffer } from './IStorage'
 import {encode,decode} from './encoder'
 import Semaphore from './semaphore';
 
@@ -15,29 +15,31 @@ export default class Storage implements IStorage{
     _level:any;
     _ts2sse:any;
     _ka2sse:any;
-    _merkle:any;
     _users:any;
     _accounts:any;
     _trust:any;
-    _btnodes:any
     _maxvaluesize:number;
     _author2ts:any;
+    _buffers:any;
+
     private semaphore:Semaphore;
 
     constructor(location:string,maxvaluesize:number){
         this._maxvaluesize=maxvaluesize;
 
         this._level = new Level.Level(location);
+        
         this._ka2sse    =this._level.sublevel('1',BUFFER_ENCODING);
         this._ts2sse    =this._level.sublevel('2',BUFFER_ENCODING);
-        this._merkle    =this._level.sublevel('3',BUFFER_ENCODING);
-        this._users     =this._level.sublevel('4',BUFFER_ENCODING);
-        this._accounts  =this._level.sublevel('5',BUFFER_ENCODING);
-        this._trust     =this._level.sublevel('6',BUFFER_ENCODING);
-        this._btnodes   =this._level.sublevel('7',BUFFER_ENCODING);
-        this._author2ts =this._level.sublevel('8',BUFFER_ENCODING);
+        this._users     =this._level.sublevel('3',BUFFER_ENCODING);
+        this._accounts  =this._level.sublevel('4',BUFFER_ENCODING);
+        this._trust     =this._level.sublevel('5',BUFFER_ENCODING);
+        this._author2ts =this._level.sublevel('6',BUFFER_ENCODING);
+        this._buffers   =this._level.sublevel('7',BUFFER_ENCODING);
+
         this.semaphore = new Semaphore(1);
     }
+
 
     async close(){
         await this._level.close();
@@ -149,16 +151,18 @@ export default class Storage implements IStorage{
         return r.s;
     }
 
-    async storeMerkleNode(snm:ISignedStorageMerkleNode){
-        await this._merkle.put(snm.entry.node.infoHash,encode(snm,this._maxvaluesize));
+
+
+    async storeBuffer(isb: ISignedBuffer):Promise<void>{
+        await this._buffers.put(isb.infoHash,encode(isb,this._maxvaluesize));
     }
 
-    async getMerkleNode(infoHash:Buffer):Promise<ISignedStorageMerkleNode|undefined>{
+    async retreiveBuffer(infoHash: Buffer):Promise<ISignedBuffer | null>{
         try{
-            var r=await this._merkle.get(infoHash);
+            var r=await this._buffers.get(infoHash);
             return decode(r);
         }catch(err){
-            return;
+            return null;
         }
     }
 
@@ -204,20 +208,6 @@ export default class Storage implements IStorage{
         await this._accounts.put(userId,encryptedBufferAccount);
     }  
     
-
-    async storeBTreeNode(sbtn:ISignedStorageBtreeNode):Promise<void>{
-        await this._btnodes.put(sbtn.entry.node.hash,encode(sbtn,this._maxvaluesize));
-    }
-
-    async getBTreeNode(infoHash:Buffer):Promise<ISignedStorageBtreeNode|undefined>{
-        try{
-            var b=await this._btnodes.get(infoHash);
-            var r=decode(b);
-            return r;
-        }catch(err){
-            return;
-        }
-    }
 
     async setTrust (object: Buffer, trust: Trust) {
         if (trust==Trust.neutral){

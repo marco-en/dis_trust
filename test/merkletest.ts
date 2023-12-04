@@ -1,5 +1,8 @@
-import * as Merkle from "../merkle.js";
-import * as sodium from "../mysodium.js";
+import * as Merkle from "../merkle";
+import * as sodium from "../mysodium";
+
+import {encode} from "../encoder"
+import { MAXMSGSIZE } from "../peer";
 
 
 const nodeSize=32*3;
@@ -12,7 +15,9 @@ async function giveatry(len:number){
     var nodes:Map<string,Merkle.IMerkleNode>=new Map();
 
     const emit=async (node:Merkle.IMerkleNode)=>{
-        nodes.set(node.infoHash.toString('hex'),node);
+        var ih=sodium.sha(encode(node,MAXMSGSIZE))
+        nodes.set(ih.toString('hex'),node);
+        return ih;
     };
 
     var mw=new Merkle.MerkleWriter(emit,sodium.sha,nodeSize);
