@@ -180,8 +180,7 @@ export default class Storage implements IStorage{
                 return true; // same author
             }
             //different author. 
-            if (signedUserId.entry.timestamp>pv.entry.timestamp)
-                return false; // different author but it is newer
+            return false; // different author but it is newer
         }
         await this._users.put(signedUserId.entry.userHash,encode(signedUserId,this._maxvaluesize));
         return true; // set first time        

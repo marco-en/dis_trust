@@ -1,7 +1,8 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
 import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,IStorage, ISignedBuffer } from './IStorage'
-import { PeerFactory,  BasePeer, MAX_TS_DIFF,  checkUserName, userIdHash,  MAXMSGSIZE, IReceiveMessagesResult} from './peer';
+import {  BasePeer,  MAXMSGSIZE, IReceiveMessagesResult} from './peer';
+import {PeerFactory,userIdHash} from './peerFactory';
 import Debug from 'debug';
 import { MerkleReader,MerkleWriter,IMerkleNode} from './merkle';
 import {DisDhtBtree,IBtreeNode} from './DisDhtBtree';
