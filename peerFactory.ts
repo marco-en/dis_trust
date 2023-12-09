@@ -1,7 +1,7 @@
 import {EventEmitter} from 'events';
 import * as sodium from './mysodium';
 import Debug from 'debug';
-import {IStorage,ISignedStorageEntry,IStorageEntry,ISignedBuffer,IUserId,ISignable } from './IStorage.js'
+import {IStorage,IStorageEntry,ISignedBuffer,IUserId,ISignable } from './IStorage.js'
 import KBucket from 'k-bucket';
 import {MeAsPeer,PeerWebsocket,BasePeer,PeerWebsocketClient,VERSION,MAXMSGSIZE,checkUserName} from './peer';
 import {encode} from './encoder';
@@ -237,7 +237,6 @@ export class PeerFactory extends EventEmitter{
         return sodium.verify(signature, msg, author);
     }
 
-
     writeSignature(thing:ISignable):void{
         thing.signature=null;
         thing.signature=this.sign(encode(thing,MAXMSGSIZE));
@@ -253,22 +252,21 @@ export class PeerFactory extends EventEmitter{
         return r;
     }
 
-    createStorageEntry(key:Buffer,value:Buffer):ISignedStorageEntry{
+    createStorageEntry(key:Buffer,value:Buffer):IStorageEntry{
         var r:IStorageEntry={
             author:this.id,
             key:key,
             value:value,
             timestamp:Date.now(),
-            version:VERSION,            
+            version:VERSION, 
+            signature:null           
         }
-        return {
-            entry:r,
-            signature:this.sign(encode(r,MAXMSGSIZE))
-        };
+        this.writeSignature(r);
+        return r;
     }
 
-    verifyStorageEntry(signedentry:ISignedStorageEntry):boolean{
-        return this.verify(encode(signedentry.entry,MAXMSGSIZE),signedentry.signature,signedentry.entry.author);
+    verifyStorageEntry(signedentry:IStorageEntry):boolean{
+        return this.verifySignature(signedentry,signedentry.author);
     }
 
     createSignedBuffer(buffer:Buffer):ISignedBuffer{
@@ -279,9 +277,9 @@ export class PeerFactory extends EventEmitter{
             version:VERSION, 
             infoHash:infoHash,
             data:buffer,
-            signature:EMPTYBUFFER
-        }
-        r.signature=this.sign(encode(r,MAXMSGSIZE))
+            signature:null
+        }       
+        this.writeSignature(r);
         return r;
     }
 
@@ -289,10 +287,7 @@ export class PeerFactory extends EventEmitter{
         var ia=sodium.sha(isb.data);
         if (Buffer.compare(ia,isb.infoHash)) return false;
         var sig=isb.signature;
-        isb.signature=EMPTYBUFFER;
-        var r=this.verify(encode(isb,MAXMSGSIZE),sig,isb.author);
-        isb.signature=sig;
-        return r;
+        return this.verifySignature(isb,isb.author);
     }
 
     createSignedUserName(userId:string):IUserId{
@@ -317,8 +312,8 @@ export class PeerFactory extends EventEmitter{
         return this.verifySignature(signed,signed.author);
     }
 
-    onReceivedMessage(signedentry:ISignedStorageEntry){
-        if (Buffer.compare(signedentry.entry.key,this.id)) 
+    onReceivedMessage(signedentry:IStorageEntry){
+        if (Buffer.compare(signedentry.key,this.id)) 
             return;
         this.emit("message",signedentry);
     }

@@ -8,7 +8,7 @@ import * as sodium from './mysodium';
 import {encode,decode} from './encoder';
 import {PeerFactory} from './peerFactory';
 
-import {IUserId,IStorageEntry,ISignedStorageEntry,IStorage,ISignedBuffer } from './IStorage.js'
+import {IUserId,IStorageEntry,IStorage,ISignedBuffer } from './IStorage.js'
 
 
 export const VERSION=1;
@@ -92,11 +92,11 @@ interface MessageEnvelope{
 
 export interface IFindResult{
     peers:BasePeer[];
-    values:ISignedStorageEntry[];
+    values:IStorageEntry[];
 }
 
 export interface IReceiveMessagesResult{
-    sses:ISignedStorageEntry[];
+    sses:IStorageEntry[];
     nextTs:number;
 }
 
@@ -184,7 +184,7 @@ export class BasePeer extends EventEmitter implements Contact{
         throw new Error("Abstract");
     }
 
-    async store(entry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
+    async store(entry:IStorageEntry,k:number):Promise<BasePeer[]|null>{
         throw new Error("Abstract");
     }
 
@@ -265,12 +265,12 @@ export class MeAsPeer extends BasePeer{
         }
     }
 
-    async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
+    async store(signedentry:IStorageEntry,k:number):Promise<BasePeer[]|null>{
         try{
             this._debug("store ...");
             await this._storage.storeSignedEntry(signedentry);
             this._peerFactory.onReceivedMessage(signedentry);
-            return this._peerFactory.findClosestPeers(signedentry.entry.key,k)
+            return this._peerFactory.findClosestPeers(signedentry.key,k)
         }finally{
             this._debug("store DONE");
         }
@@ -284,7 +284,7 @@ export class MeAsPeer extends BasePeer{
 
             return{
                 sses:values,
-                nextTs:values.length?values[values.length-1].entry.timestamp:0
+                nextTs:values.length?values[values.length-1].timestamp:0
             }
         }finally{
             this._debug("findValues DONE");
@@ -489,7 +489,7 @@ class Peer extends BasePeer  {
      * @returns list of peers
      */
 
-    async store(signedentry:ISignedStorageEntry,k:number):Promise<BasePeer[]|null>{
+    async store(signedentry:IStorageEntry,k:number):Promise<BasePeer[]|null>{
         this._debug("store...");
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
         if (this._id==null)
@@ -508,14 +508,14 @@ class Peer extends BasePeer  {
     protected async _onStore(storeEnvelope:MessageEnvelope,){
         this._debug("_onStore...");
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var signedentry:ISignedStorageEntry=storeEnvelope.p.entry;
+        var signedentry:IStorageEntry=storeEnvelope.p.entry;
         if(!this._peerFactory.verifyStorageEntry(signedentry)){
             return this._maliciousPeer("receive fake storage entry");
         }
         await this._storage.storeSignedEntry(signedentry);
         this._peerFactory.onReceivedMessage(signedentry);
 
-        var ids=this._onFindNodeInner(signedentry.entry.key,storeEnvelope.p.k)
+        var ids=this._onFindNodeInner(signedentry.key,storeEnvelope.p.k)
         await this._replyToPeer({ids:ids},storeEnvelope);
         this._debug("_onStore done");
     }
@@ -1251,7 +1251,7 @@ class VerySimplePeer extends Peer{
     }
 
     protected async _onIntroduction(introEnvelope:MessageEnvelope){
-        super._onIntroduction(introEnvelope);
+        await super._onIntroduction(introEnvelope);
         if (!this._id || Buffer.compare(this._expectednodeid,this._id))
             this._maliciousPeer("introduction did not send expected id")
     }
@@ -1278,7 +1278,9 @@ class VerySimplePeer extends Peer{
     async destroy() {
         try{
             if (this._simplePeer){
+                this._debug("destroy VerySimplePeer")
                 this._simplePeer.destroy();
+                this._debug("destroyed VerySimplePeer")
                 this._simplePeer=null;
             }
         }catch(err){};

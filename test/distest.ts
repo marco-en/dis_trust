@@ -4,7 +4,6 @@ import fs from "node:fs/promises";
 import * as sodium from '../mysodium';
 import {encode,decode} from '../encoder';
 import Debug from 'debug';
-import {ISignedStorageEntry} from '../IStorage';
 import { DisDhtBtree } from "../DisDhtBtree";
 import Path from 'node:path';
 

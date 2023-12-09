@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import {IStorageEntry,ISignedStorageEntry,IStorage,  ISignable,IUserId } from './IStorage'
+import {IStorageEntry,IStorage,  ISignable,IUserId } from './IStorage'
 import {  BasePeer,  MAXMSGSIZE, IReceiveMessagesResult} from './peer';
 import {PeerFactory,userIdHash} from './peerFactory';
 import Debug from 'debug';
@@ -443,7 +443,7 @@ export class DisDHT extends EventEmitter{
                 let fr=await peer.findValueAuthor(realAuthor,KGET);
                 if (fr==null) return null;
                 for (var v of fr.values)
-                    if (isv===undefined || isv.timestamp<v.entry.timestamp) isv=v.entry;
+                    if (isv===undefined || isv.timestamp<v.timestamp) isv=v;
                 return fr.peers;
             }catch(err){
                 console.log("receiveMessageFromAuthor callback failed");
@@ -467,11 +467,11 @@ export class DisDHT extends EventEmitter{
 
     }
 
-    private async emitSignedStorageEntry(sse:ISignedStorageEntry):Promise<boolean>{
-        if (!await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp))
+    private async emitSignedStorageEntry(sse:IStorageEntry):Promise<boolean>{
+        if (!await this._storage.isNewMark(sse.author,sse.timestamp))
             return false;
         
-        this.emit(ONMESSAGE,{author:sse.entry.author, content:sse.entry.value});
+        this.emit(ONMESSAGE,{author:sse.author, content:sse.value});
         return true
     }
 
@@ -480,8 +480,8 @@ export class DisDHT extends EventEmitter{
         if (!this._startup) 
             return false;
 
-        const isNewAndMark=async (sse:ISignedStorageEntry)=>{
-            return await this._storage.isNewMark(sse.entry.author,sse.entry.timestamp);
+        const isNewAndMark=async (sse:IStorageEntry)=>{
+            return await this._storage.isNewMark(sse.author,sse.timestamp);
         }
 
         const processSses=async (rm:IReceiveMessagesResult|null)=>{

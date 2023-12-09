@@ -1,5 +1,5 @@
 import Level from 'level';
-import {IUserId,ISignedStorageEntry,Trust,IStorage, ISignedBuffer } from './IStorage'
+import {IUserId,IStorageEntry,Trust,IStorage, ISignedBuffer } from './IStorage'
 import {encode,decode} from './encoder'
 import Semaphore from './semaphore';
 
@@ -51,9 +51,9 @@ export default class Storage implements IStorage{
         await this._level.clear();
     }
 
-    async storeSignedEntry(sse:ISignedStorageEntry){
-        var key=sse.entry.key;
-        var author=sse.entry.author;
+    async storeSignedEntry(sse:IStorageEntry){
+        var key=sse.key;
+        var author=sse.author;
         await this.deleteAuthor(key,author);
 
         var skey=key.toString('hex');
@@ -103,7 +103,7 @@ export default class Storage implements IStorage{
         }catch(err){}
     }
 
-    async retreiveAnyAuthor (key: Buffer,tsGt:number, maxNumRecords:number ) : Promise<ISignedStorageEntry[]>{
+    async retreiveAnyAuthor (key: Buffer,tsGt:number, maxNumRecords:number ) : Promise<IStorageEntry[]>{
         var skey=key.toString('hex');
         var sa=this._ka2sse.sublevel(skey,BUFFER_ENCODING);
         var st=this._ts2sse.sublevel(skey,BUFFER_ENCODING);
@@ -116,7 +116,7 @@ export default class Storage implements IStorage{
         };
         option={}; //for testing
 
-        var r:ISignedStorageEntry[]=[];
+        var r:IStorageEntry[]=[];
 
         try{
             await this.semaphore.dec();
@@ -138,7 +138,7 @@ export default class Storage implements IStorage{
         return r;
     }
 
-    async retreiveAuthor (key: Buffer, author: Buffer) : Promise<ISignedStorageEntry|null>{
+    async retreiveAuthor (key: Buffer, author: Buffer) : Promise<IStorageEntry|null>{
         var skey=key.toString('hex');
         var sa=this._ka2sse.sublevel(skey,BUFFER_ENCODING);
         var b;
