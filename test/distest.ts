@@ -157,17 +157,24 @@ async function fn(){
 
     if(!await dht.setUser(userId)){
         console.log("failed to set userID");
+        throw new Error();
     }
 
     var ub=await dht.getUser(userId);
-    if (ub==null) 
+    if (ub==null) {
         console.log("failed to get user");
-    else if (Buffer.compare(ub,dht.id))
+        throw new Error();
+    }
+    else if (Buffer.compare(ub,dht.id)){
         console.log("got wrong user");
+        throw new Error();
+    }
+
 
 
     if(await dht2.setUser(userId)){
         console.log("could steal name");
+        throw new Error();
     }
 
     

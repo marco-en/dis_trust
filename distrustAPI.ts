@@ -6,14 +6,13 @@ import {symmetric_encrypt,symmetric_decrypt,sha,crypto_secretbox_NONCEBYTES,rand
 import {DisDHT,IDHTMessage,NODESIZE} from './disdht.js';
 import {crypto_box_seed_keypair} from './mysodium.js';
 
-import {DisDhtBtree,IBtreeNode} from './DisDhtBtree.js'
-import {IStorage,Trust } from './IStorage.js'
-
-
-import mime from "mime";
+import {DisDhtBtree} from './DisDhtBtree.js'
+import {IStorage,Trust,ISignable } from './IStorage.js'
+import { MAXMSGSIZE } from "./peer.js";
 
 const VERSION=1;
-const DISSCHEMA="dtp"
+const DISSCHEMA="dtp";
+const LASTEVENTMAXSIZE=10;
 
 export interface IMediaStream{
     mime:string,
@@ -25,7 +24,7 @@ export interface IMediaNode{
     node:Buffer,    
 }
 
-export interface IAccount{
+export interface IAccount extends ISignable{
     id:Buffer,
     timestamp:number,
     secretKey:Buffer,
@@ -40,7 +39,9 @@ export interface IAccount{
     bio:string;
     profilePic?:IMediaNode,
     headerPic?:IMediaNode,
-    lastStatus:string
+    lastEvents:ITimelineEvent[];
+
+    signature:Buffer|null;
 }
 
 
@@ -70,7 +71,6 @@ export enum TLType{
     encryptedPost,
     like,
     trust,
-    accountUpdate,
 }
 
 export interface IMention{
@@ -78,24 +78,11 @@ export interface IMention{
     ts:number,
 }
 
-function compareMention(a:IMention,b:IMention):number{
-    var r=Buffer.compare(a.account,b.account);
-    if (r) return r;
-    return a.ts-b.ts;
-}
 
 export interface ITimelineEvent{
     version:number,
     type:TLType,
     ts:number,
-}
-
-function compareTL(a:ITimelineEvent,b:ITimelineEvent){
-    return a.ts-b.ts;
-}
-
-function getIndexTL(e:ITimelineEvent){
-    return e.ts;
 }
 
 export interface ITimelinePost extends ITimelineEvent{
@@ -117,13 +104,6 @@ interface Like{
     like:LikeLevel,
 }
 
-function compareLike(a:Like,b:Like):number{
-    return compareMention(a.post,b.post);
-}
-
-function getIndexLike(e:Like){
-    return e.post;
-}
 
 export interface ITimelineLike extends ITimelineEvent{
     like:Like,
@@ -136,6 +116,28 @@ export interface ITimelineTrust extends ITimelineEvent{
 export interface IAccountUpdateEvent extends ITimelineEvent{
     update:IAccountUpdate;
 }
+
+function compareMention(a:IMention,b:IMention):number{
+    var r=Buffer.compare(a.account,b.account);
+    if (r) return r;
+    return a.ts-b.ts;
+}
+
+function compareTL(a:ITimelineEvent,b:ITimelineEvent){
+    return a.ts-b.ts;
+}
+
+function getIndexTL(e:ITimelineEvent){
+    return e.ts;
+}
+function compareLike(a:Like,b:Like):number{
+    return compareMention(a.post,b.post);
+}
+
+function getIndexLike(e:Like){
+    return e.post;
+}
+
 
 
 export default class DistrustAPI extends EventEmitter{
@@ -168,8 +170,9 @@ export default class DistrustAPI extends EventEmitter{
             relyOnAuthorsBtreeRoot:null,
             trustedAuthorsBtreeRoot:null,
             likesBtreeRoot:null,
-            lastStatus:"",
-            bio:""
+            lastEvents:[],
+            bio:"",
+            signature:null
         }
         this._password=password;
         await this.saveAccount();
@@ -194,7 +197,8 @@ export default class DistrustAPI extends EventEmitter{
      */
 
     async saveAccount(){
-        if (this.account==null) throw new Error("account not opened");
+        if (this.account==null || !this._dht) throw new Error("account not opened");
+        this._dht.sign(this.account);
         await this._storage.setAccount(this.account.userId,await this.exportAccount());
     }
 
@@ -322,7 +326,7 @@ export default class DistrustAPI extends EventEmitter{
             media:mediaNodes
         }
 
-        var r=await this._post(post,markdownText);
+        var r=await this._post(post);
         return r;
     }
 
@@ -419,13 +423,14 @@ export default class DistrustAPI extends EventEmitter{
         await this._dht.btreeGet(key, this.account.tlBtreeRoot,compareTL,getIndexTL,emitevent)
     }
 
-    protected async _post(tlevent:ITimelineEvent,lastStatus:string|null=null):Promise<string>{
+    protected async _post(tlevent:ITimelineEvent):Promise<string>{
         if (this.account==null) throw new Error("account not opened");
         if (!this._dht) throw new Error();
         this.account.tlBtreeRoot=await this._dht.btreePut(tlevent,this.account.tlBtreeRoot,tlBTreeCompare,tlBTreeGetIndex);
-        if (lastStatus) this.account.lastStatus=lastStatus;
+        this.account.lastEvents.unshift(tlevent);
+        if (this.account.lastEvents.length>LASTEVENTMAXSIZE) this.account.lastEvents.pop();
         await this.saveAccount();
-        await this.messageToEveryone(tlevent);
+        await this.messageToEveryone();
         return this._packUrl(this.account.id,tlevent.ts);
     }
 
@@ -433,10 +438,73 @@ export default class DistrustAPI extends EventEmitter{
         return DISSCHEMA+"://"+account.toString('hex')+'/'+ts
     }
 
-    protected async messageToEveryone(tlevent:ITimelineEvent){
-        
+    private getMentioned():Buffer[]{
+        if(!this.account) throw new Error();
+        var smentioned=new Map<string,Buffer>();
 
+        const addAccount=(account:Buffer|null)=>{
+            if (!account) return;
+            smentioned.set(account.toString('hex'),account);
+        }
+
+        const addAccounts=(accounts:Buffer[]|null)=>{
+            if (!accounts) return;
+            for(let account of accounts) addAccount(account);
+        }  
         
+        const addMention=(mention:IMention|null)=>{
+            if (!mention) return;
+            addAccount(mention.account);
+        }
+
+        const processPost=(ev:ITimelinePost)=>{
+            addAccounts(ev.quotedAccounts);
+            addMention(ev.quotedPost);
+            addMention(ev.replyTo);
+        }
+
+        const processTrust=(ev:ITimelineTrust)=>{
+            if (ev.trust.trust==Trust.distrust) return;
+            addAccount(ev.trust.id)
+        }
+
+        for (var ev of this.account.lastEvents){
+            switch(ev.type){
+                case TLType.post:
+                    processPost(ev as ITimelinePost)
+                    break;
+                case TLType.like:
+                    addMention((ev as ITimelineLike).like.post);
+                    break;
+                case TLType.trust:
+                    processTrust(ev as ITimelineTrust);
+                    break;
+            }
+        }
+        return Array.from(smentioned.values());
+    }
+
+    //inform who trusts me and who i mentioned
+    protected async messageToEveryone(){
+        if (!this.account) throw new Error();
+        var accountBuffer=encode(this.account,MAXMSGSIZE);
+        var mentions:Buffer[]=this.getMentioned();
+        for (var mentioned of mentions){
+            await this.messageOne(mentioned,accountBuffer);
+        }
+        if(this.account.relyOnAuthorsBtreeRoot)
+            await this.multicast(this.account.relyOnAuthorsBtreeRoot,accountBuffer);
+    }
+
+    protected async messageOne(target:Buffer,msg:Buffer){
+        if (!this._dht) throw new Error();
+        await this._dht.sendMessage(target,msg);
+    }
+
+    protected async multicast(relayNode:Buffer,msg:Buffer){
+        if (!this._dht) throw new Error();
+        //await this._dht.multicast(relayNode,msg);
+
     }
     
     protected async onMessage(msg:IDHTMessage){

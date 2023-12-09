@@ -8,7 +8,7 @@ import * as sodium from './mysodium';
 import {encode,decode} from './encoder';
 import {PeerFactory} from './peerFactory';
 
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,IStorage,ISignedBuffer } from './IStorage.js'
+import {IUserId,IStorageEntry,ISignedStorageEntry,IStorage,ISignedBuffer } from './IStorage.js'
 
 
 export const VERSION=1;
@@ -102,7 +102,7 @@ export interface IReceiveMessagesResult{
 
 export interface IGetUserResult{
     peers:BasePeer[];
-    value?:ISignedUserId;
+    value?:IUserId;
 }
 
 interface IPendingRequest{
@@ -208,7 +208,7 @@ export class BasePeer extends EventEmitter implements Contact{
         throw new Error("Abstract");
     }
 
-    async setUserId(signedUserId:ISignedUserId,k:number):Promise<BasePeer[]|false|null>{
+    async setUserId(userId:IUserId,k:number):Promise<BasePeer[]|false|null>{
         throw new Error("Abstract");
     }
 
@@ -323,11 +323,11 @@ export class MeAsPeer extends BasePeer{
         return "MeAsPeer";
     }
 
-    async setUserId(signedUserId:ISignedUserId,k:number):Promise<BasePeer[]|null>{
+    async setUserId(userId:IUserId,k:number):Promise<BasePeer[]|null>{
         try{
             this._debug("setUserId ...");
-            await this._storage.setUserId(signedUserId);
-            return this._peerFactory.findClosestPeers(signedUserId.entry.userHash,k);
+            await this._storage.setUserId(userId);
+            return this._peerFactory.findClosestPeers(userId.userHash,k);
         }finally{
             this._debug("setUserId DONE");
         }
@@ -604,12 +604,12 @@ class Peer extends BasePeer  {
      * @returns 
      */
 
-    async setUserId(signedUserId:ISignedUserId,k:number):Promise<BasePeer[]|false|null>{
+    async setUserId(userId:IUserId,k:number):Promise<BasePeer[]|false|null>{
         this._debug("setUserId...");
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        if (!checkUserName(signedUserId.entry.userId)) throw new RangeError("user lenght");
+        if (!checkUserName(userId.userId)) throw new RangeError("user lenght");
         var res=await this._requestToPeer({
-            entry:signedUserId,
+            entry:userId,
             k:k
         },MessageType.setUserId);
         if (!res) return null;
@@ -622,10 +622,10 @@ class Peer extends BasePeer  {
     protected async _onSetUserId(userIdMessage:MessageEnvelope){
         this._debug("_onSetUserId...");
         if (this._PeerStatus!=PeerStatus.active) throw new Error("Peer not active");
-        var su:ISignedUserId=userIdMessage.p.entry;
+        var su:IUserId=userIdMessage.p.entry;
         var k:number=userIdMessage.p.k;
 
-        if (!checkUserName(su.entry.userId)){
+        if (!checkUserName(su.userId)){
             this._maliciousPeer("invalid userId");
             return;
         }
@@ -636,7 +636,7 @@ class Peer extends BasePeer  {
         }
 
         if (await this._storage.setUserId(su)){
-            let ids=this._onFindNodeInner(su.entry.userHash,k);
+            let ids=this._onFindNodeInner(su.userHash,k);
             await this._replyToPeer({result:true, ids:ids},userIdMessage);
         }
         else
@@ -657,10 +657,10 @@ class Peer extends BasePeer  {
         var r:IGetUserResult={
             peers:peers
         }
-        var signed:ISignedUserId=res.p.signed;
+        var signed:IUserId=res.p.userId;
         if(signed) {
             r.value=signed;
-            if (Buffer.compare(signed.entry.userHash,userHash))
+            if (!this._peerFactory.verifySignature(signed,signed.author) || Buffer.compare(signed.userHash,userHash))
             {
                 this._maliciousPeer("returned wrong userHash");
                 return null;
@@ -1228,8 +1228,8 @@ export class PeerWebsocketClient extends PeerWebsocket{
 
 
 class VerySimplePeer extends Peer{
-    _simplePeer:SimplePeer.Instance;
-    _expectednodeid:Buffer;
+    private _simplePeer:SimplePeer.Instance|null;
+    private _expectednodeid:Buffer;
 
     constructor(peerFactory:PeerFactory,simplePeer:SimplePeer.Instance, expectednodeid:Buffer){
         super(peerFactory);
@@ -1247,17 +1247,23 @@ class VerySimplePeer extends Peer{
         })
         
 
-
         this._debug("VerySimplePeer create, expecting nodeId %s",expectednodeid.toString('hex').slice(0,6));
+    }
+
+    protected async _onIntroduction(introEnvelope:MessageEnvelope){
+        super._onIntroduction(introEnvelope);
+        if (!this._id || Buffer.compare(this._expectednodeid,this._id))
+            this._maliciousPeer("introduction did not send expected id")
     }
 
 
     protected _sendMsg(msg:Buffer):Promise<void>{
         return new Promise((resolve,reject)=>{
+            if(!this._simplePeer) return reject("destroyed");
             if (this._simplePeer.closed) return reject("closed");
             if (!this._simplePeer.connected) return reject("not connected");
             if (this._simplePeer.errored)   return reject("errored");
-            if (this._simplePeer.destroyed)  return reject("destroyed");
+            if (this._simplePeer.destroyed)  return reject("destroyed WEIRD" );
             if (!this._simplePeer.writable)   return reject("not writable");
             try{
                 this._simplePeer.send(msg);
@@ -1271,7 +1277,10 @@ class VerySimplePeer extends Peer{
 
     async destroy() {
         try{
-            this._simplePeer.destroy();
+            if (this._simplePeer){
+                this._simplePeer.destroy();
+                this._simplePeer=null;
+            }
         }catch(err){};
         await super.destroy();
     }

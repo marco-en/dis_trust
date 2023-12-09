@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer'
 import Kbucket from 'k-bucket';
-import {IUserId,ISignedUserId,IStorageEntry,ISignedStorageEntry,IStorage, ISignedBuffer } from './IStorage'
+import {IStorageEntry,ISignedStorageEntry,IStorage,  ISignable,IUserId } from './IStorage'
 import {  BasePeer,  MAXMSGSIZE, IReceiveMessagesResult} from './peer';
 import {PeerFactory,userIdHash} from './peerFactory';
 import Debug from 'debug';
@@ -38,6 +38,7 @@ export interface IDHTMessage{
     author:Buffer,
     content:Buffer
 }
+
 
 function mustSplit(n:any){
     try{
@@ -176,7 +177,7 @@ export class DisDHT extends EventEmitter{
 
         try{
             await this._onceatime.dec();
-            await this._closestNodesNavigator(signedUserId.entry.userHash,KPUT,callback);
+            await this._closestNodesNavigator(signedUserId.userHash,KPUT,callback);
         }finally{
             this._onceatime.inc();
         }
@@ -199,7 +200,7 @@ export class DisDHT extends EventEmitter{
         const userHash=userIdHash(userId);
 
         interface EC{
-            se:ISignedUserId,
+            se:IUserId,
             score:number
         }
         var author2cnt:Map<string,EC>=new Map();
@@ -208,7 +209,7 @@ export class DisDHT extends EventEmitter{
             let r=await peer.getUserId(userHash,KGET);
             if (r==null) return [];
             if (r.value){
-                let sa=r.value.entry.author.toString('hex');
+                let sa=r.value.author.toString('hex');
                 let ec=author2cnt.get(sa);
                 if (!ec){
                     ec= { se:r.value, score:0 };
@@ -234,7 +235,7 @@ export class DisDHT extends EventEmitter{
                 maxscore=se.score
             }
         }
-        var rr=r?r.entry.author:null;
+        var rr=r?r.author:null;
         this._debug("getUser DONE "+rr?.toString('hex'));
         return rr;
     }
@@ -324,7 +325,7 @@ export class DisDHT extends EventEmitter{
 
     }
 
-    protected async _getNode(infoHash:Buffer){
+    protected async getNode(infoHash:Buffer){
         var r:any=null;
 
         var lr=await this.localPeer.retreiveBuffer(infoHash,0);
@@ -373,7 +374,7 @@ export class DisDHT extends EventEmitter{
 
         const read=async (ih:Buffer)=>{
             if (cancelled) return;
-            var r = await this._getNode(ih);
+            var r = await this.getNode(ih);
             if (!r) return;
             return r
         };
@@ -551,7 +552,7 @@ export class DisDHT extends EventEmitter{
         }
 
         const _readNodeBtree=(infoHash:Buffer)=>{
-            return this._getNode(infoHash);
+            return this.getNode(infoHash);
         }
 
         try{
@@ -579,7 +580,7 @@ export class DisDHT extends EventEmitter{
         }
 
         const _readNodeBtree=(infoHash:Buffer)=>{
-            return this._getNode(infoHash);
+            return this.getNode(infoHash);
         }
 
         try{
@@ -590,6 +591,10 @@ export class DisDHT extends EventEmitter{
             this._onceatime.inc();
         }
 
+
+    }
+
+    public async multicast(relayNode:Buffer,callback:()=>Promise<boolean>){
 
     }
 
@@ -625,6 +630,14 @@ export class DisDHT extends EventEmitter{
         var r=kb.closest(key,k);
         this._debug("_closestNodesNavigator to %s DONE",key.toString('hex'))
         return r as any;
+    }
+
+    sign(thing:ISignable){
+        this._peerFactory.writeSignature(thing)
+    }
+
+    verify(thing:ISignable,author:Buffer){
+        return this._peerFactory.verifySignature(thing,author);
     }
 
 }

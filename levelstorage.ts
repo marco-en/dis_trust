@@ -1,5 +1,5 @@
 import Level from 'level';
-import {ISignedUserId,ISignedStorageEntry,Trust,IStorage, ISignedBuffer } from './IStorage'
+import {IUserId,ISignedStorageEntry,Trust,IStorage, ISignedBuffer } from './IStorage'
 import {encode,decode} from './encoder'
 import Semaphore from './semaphore';
 
@@ -166,27 +166,27 @@ export default class Storage implements IStorage{
         }
     }
 
-    async setUserId (signedUserId:ISignedUserId):Promise<boolean>{
-        var pv:ISignedUserId|undefined;
+    async setUserId (userId:IUserId):Promise<boolean>{
+        var pv:IUserId|undefined;
         try{
-            pv=decode(await this._users.get(signedUserId.entry.userHash));
+            pv=decode(await this._users.get(userId.userHash));
         }catch(err){
         }
         if (pv){
-            if (signedUserId.entry.userId!=pv.entry.userId){
-                return false; // same has, different user ID. theorically almost impossible
+            if (userId.userId!=pv.userId){
+                return false; // same hash, different user ID. theorically almost impossible
             }
-            if (Buffer.compare(signedUserId.entry.author,pv.entry.author)==0){
-                return true; // same author
+            if (Buffer.compare(userId.author,pv.author)==0){
+                return true; // same author. No need to do anything.
             }
             //different author. 
-            return false; // different author but it is newer
+            return false; // different author comes later. Reject
         }
-        await this._users.put(signedUserId.entry.userHash,encode(signedUserId,this._maxvaluesize));
+        await this._users.put(userId.userHash,encode(userId,this._maxvaluesize));
         return true; // set first time        
     }
 
-    async getUserId(userHash:Buffer):Promise<ISignedUserId|undefined>{
+    async getUserId(userHash:Buffer):Promise<IUserId|undefined>{
         try{
             var r=await this._users.get(userHash);
             return decode(r);
