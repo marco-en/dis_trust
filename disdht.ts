@@ -464,7 +464,6 @@ export class DisDHT extends EventEmitter{
         }else{
             return null;
         }
-
     }
 
     private async emitSignedStorageEntry(sse:IStorageEntry):Promise<boolean>{
@@ -590,13 +589,32 @@ export class DisDHT extends EventEmitter{
         }finally{
             this._onceatime.inc();
         }
-
-
     }
 
-    public async multicast(relayNode:Buffer,callback:()=>Promise<boolean>){
+    public async cascadeToFollowers(BTNode:Buffer,message:Buffer,compare:(a:any,b:any)=>number,getIndex:(a:any)=>any){
 
+        const _error= async(x:any)=>{
+            throw new Error();
+        }
+
+        const _readNodeBtree=(infoHash:Buffer)=>{
+            return this.getNode(infoHash);
+        }
+
+        var bt=new DisDhtBtree(BTNode,_readNodeBtree,_error,compare,getIndex,mustSplit);
+
+        const cascadeLeaf= async (element:any) => {
+            this.emit('cascade',element,message);
+        }
+
+        const cascadeInnerNode=async (childNodeInfoHash:Buffer)=>{
+            let node=await _readNodeBtree(childNodeInfoHash);
+            
+        }
+
+        await bt.cascade(message,cascadeLeaf,cascadeInnerNode);
     }
+
 
     protected async _closestNodesNavigator(key: Buffer,k:number, callback:(peer:BasePeer)=>Promise<BasePeer[]|null>): Promise<BasePeer[]> {
         this._debug("_closestNodesNavigator to %s...",key.toString('hex'));

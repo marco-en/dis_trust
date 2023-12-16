@@ -17,6 +17,7 @@ export default class Storage implements IStorage{
     _ka2sse:any;
     _users:any;
     _accounts:any;
+    _ownAccount:any;
     _trust:any;
     _maxvaluesize:number;
     _author2ts:any;
@@ -36,6 +37,7 @@ export default class Storage implements IStorage{
         this._trust     =this._level.sublevel('5',BUFFER_ENCODING);
         this._author2ts =this._level.sublevel('6',BUFFER_ENCODING);
         this._buffers   =this._level.sublevel('7',BUFFER_ENCODING);
+        this._ownAccount=this._level.sublevel('8',BUFFER_ENCODING);
 
         this.semaphore = new Semaphore(1);
     }
@@ -207,6 +209,18 @@ export default class Storage implements IStorage{
         await this._accounts.put(userId,encryptedBufferAccount);
     }  
     
+
+    async getOwnAccount(userId:string):Promise<Buffer|undefined>{
+        try{
+            return await this._ownAccount.get(userId);
+        }catch(err){
+            return;
+        }
+    }
+
+    async setOwnAccount(userId:string,encryptedBufferAccount:Buffer){
+        await this._ownAccount.put(userId,encryptedBufferAccount);
+    }  
 
     async setTrust (object: Buffer, trust: Trust) {
         if (trust==Trust.neutral){

@@ -148,9 +148,6 @@ export class DisDhtBtree{
 
         var subinner=await recur();
 
-        
-
-
         if (subinner instanceof Buffer){
             let nc=[...node.children];
             nc[i]=subinner;
@@ -201,7 +198,7 @@ export class DisDhtBtree{
                     return false;
             }
         }
-        return true
+        return true;
     }
 
     protected async _getInner(node:IBtreeNode, key:any, found:(data:any)=>Promise<boolean> ):Promise<boolean>{
@@ -219,6 +216,24 @@ export class DisDhtBtree{
                 return await this._get(node.children[i],key,found);
         }
         return await this._get(node.children[i],key,found);;
+    }
+
+    public async cascade(infoHash:Buffer,
+            cascadeLeaf:(leaf:any)=>Promise<void>,
+            cascadeInnerNode:(aChild:Buffer)=>Promise<void>){
+        var node=await this._readNode(infoHash);
+        if (node==null) return;
+        if (!this.checkNode(node)) throw new Error("retreived invalid node");
+        if (node.leaf){
+            for(let elem of node.leaf){
+                await cascadeLeaf(elem);
+            }
+        }else if (node.children){
+            for(let aChild of node.children){
+                await cascadeInnerNode(aChild);
+            }
+        }
+        else throw new Error("retreived invalid node 2");
     }
 }
 

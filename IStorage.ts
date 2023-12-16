@@ -33,8 +33,8 @@ export interface ISignedBuffer extends IStorageEntryBase{
 
 export enum Trust{
     neutral=0,
-    distrust=-1,
-    trust=1
+    boycott=-1,
+    follow=1
 }
 
 
@@ -51,6 +51,8 @@ export interface IStorage{
 
     getAccount:(userId:string)=>Promise<Buffer|undefined>,
     setAccount:(userId:string,encryptedBufferAccount:Buffer)=>Promise<void>,
+    getOwnAccount:(userId:string)=>Promise<Buffer|undefined>,
+    setOwnAccount:(userId:string,encryptedBufferAccount:Buffer)=>Promise<void>,
 
     setTrust:(object:Buffer,trust:Trust)=>Promise<void>;
     getTrust:(object:Buffer)=>Promise<Trust>;

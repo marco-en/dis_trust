@@ -1,16 +1,14 @@
 import { EventEmitter } from "events";
-
+import Debug from 'debug';
 import {encode,decode} from './encoder.js'
 
 import {symmetric_encrypt,symmetric_decrypt,sha,crypto_secretbox_NONCEBYTES,randombytes} from './mysodium.js';
 import {DisDHT,IDHTMessage,NODESIZE} from './disdht.js';
 import {crypto_box_seed_keypair} from './mysodium.js';
 
-import {DisDhtBtree} from './DisDhtBtree.js'
 import {IStorage,Trust,ISignable } from './IStorage.js'
 import { MAXMSGSIZE } from "./peer.js";
 
-const VERSION=1;
 const DISSCHEMA="dtp";
 const LASTEVENTMAXSIZE=10;
 
@@ -26,126 +24,90 @@ export interface IMediaNode{
 
 export interface IAccount extends ISignable{
     id:Buffer,
-    timestamp:number,
-    secretKey:Buffer,
     userId:string,
+    timestamp:number,
 
-    tlBtreeRoot:Buffer|null,
+    ownTimelineBTree:Buffer|null; // ITimelineEvent.ts 2 ITimelineEvent
+    ownQuotationsBTree:Buffer|null;// {IQuotationTimelineEvent.who,IQuotationTimelineEvent.ev.ts} 2 IQuotationTimelineEvent
+    timelineBTree:Buffer|null; // IReceivedTimelineEvent.receiveTS 2 IReceivedTimelineEvent
+    followersBTree:Buffer|null; // IReceivedTimelineEvent.ev.account 2 IReceivedTimelineEvent
 
-    relyOnAuthorsBtreeRoot:Buffer|null,
-    trustedAuthorsBtreeRoot:Buffer|null,
-    likesBtreeRoot:Buffer|null,
-
-    bio:string;
+    bio:string,
     profilePic?:IMediaNode,
     headerPic?:IMediaNode,
-    lastEvents:ITimelineEvent[];
-
-    signature:Buffer|null;
 }
 
+export interface IOwnAccount{
+    account:IAccount,
+    secretKey:Buffer,
+}
 
-interface IAccountTrustElement{
-    id:Buffer,
+export enum TLType{
+    updateAccount,
+    post,
+    like,
+    trust,
+}
+
+export interface ITimelineEventKey{
+    ts:number,
+    accountId:Buffer,
+}
+
+export interface ITimelineEvent extends ITimelineEventKey,ISignable{
+    type:TLType,
+}
+
+export interface IReceivedTimelineEvent extends ISignable {
+    receiveTS:number,
+    ev:ITimelineEvent
+}
+
+export interface IQuotationTimelineEvent extends ISignable{
+    who:Buffer,
+    ev:ITimelineEvent    
+}
+
+export interface ITimelinePostEvent extends ITimelineEvent{
+    markdownText:string,
+    quotedPost:ITimelineEventKey|null,
+    replyTo:ITimelineEventKey|null,
+    media:IMediaNode[]|null
+    quotedAccounts:Buffer[]|null,
+}
+
+export interface ITrustEvent extends ITimelineEvent{
+    who:Buffer,
     trust:Trust
 }
 
-function trustedBTcompare(a:IAccountTrustElement,b:IAccountTrustElement){
-    return Buffer.compare(a.id,b.id);
-}
-
-function trustedBTgetIndex(a:IAccountTrustElement){
-    return a.id;
-}
-
-export interface IAccountUpdate{
+export interface IAccountUpdateEvent extends ITimelineEvent{
     userId?:string,
     bio?:string;
     profileStream?:IMediaStream,
     headerStream?:IMediaStream,  
 }
 
-export enum TLType{
-    updateAccount,
-    post,
-    encryptedPost,
-    like,
-    trust,
-}
-
-export interface IMention{
-    account:Buffer,
-    ts:number,
-}
-
-
-export interface ITimelineEvent{
-    version:number,
-    type:TLType,
-    ts:number,
-}
-
-export interface ITimelinePost extends ITimelineEvent{
-    markdownText:string,
-    quotedPost:IMention|null,
-    replyTo:IMention|null,
-    quotedAccounts:Buffer[]|null,
-    media:IMediaNode[]|null
-}
-
-export enum LikeLevel{
+export enum Like{
     neutral=0,
     dislike=-1,
     like=1
 }
 
-interface Like{
-    post:IMention,
-    like:LikeLevel,
-}
-
-
-export interface ITimelineLike extends ITimelineEvent{
+interface ITimelineLikeEvent extends ITimelineEvent{
+    what:ITimelineEventKey,
     like:Like,
-}
-
-export interface ITimelineTrust extends ITimelineEvent{
-    trust:IAccountTrustElement
-}
-
-export interface IAccountUpdateEvent extends ITimelineEvent{
-    update:IAccountUpdate;
-}
-
-function compareMention(a:IMention,b:IMention):number{
-    var r=Buffer.compare(a.account,b.account);
-    if (r) return r;
-    return a.ts-b.ts;
-}
-
-function compareTL(a:ITimelineEvent,b:ITimelineEvent){
-    return a.ts-b.ts;
-}
-
-function getIndexTL(e:ITimelineEvent){
-    return e.ts;
-}
-function compareLike(a:Like,b:Like):number{
-    return compareMention(a.post,b.post);
-}
-
-function getIndexLike(e:Like){
-    return e.post;
 }
 
 
 
 export default class DistrustAPI extends EventEmitter{
-    _storage:IStorage;
-    account:IAccount|null=null;
-    _password:string="";
-    _dht:DisDHT|null=null;
-    _tlBtree:DisDhtBtree|null=null;
+    protected _storage:IStorage;
+    protected _account:IAccount|null=null;
+    protected _ownAccount:IOwnAccount|null=null;
+    protected _password:string="";
+    protected _dht:DisDHT|null=null;
+    protected _debug=Debug("DistrustAPI");
 
     constructor(storage:IStorage){
         super();
@@ -159,48 +121,45 @@ export default class DistrustAPI extends EventEmitter{
      */
 
     async createAccount(userId:string,password:string){
-        if (this.account!=null) throw new Error("account opened");
+        if (this._account!=null) throw new Error("account opened");
         var {pk,sk}=crypto_box_seed_keypair();
-        this.account={
+        this._account={
             id:pk,
-            secretKey:sk,
             userId:userId,
             timestamp:Date.now(),
-            tlBtreeRoot:null,
-            relyOnAuthorsBtreeRoot:null,
-            trustedAuthorsBtreeRoot:null,
-            likesBtreeRoot:null,
-            lastEvents:[],
+
+            ownTimelineBTree:null,
+            ownQuotationsBTree:null,
+            timelineBTree:null,
+            followersBTree:null,
+            
             bio:"",
             signature:null
+        }
+        this._ownAccount={
+            account:this._account,
+            secretKey:sk
         }
         this._password=password;
         await this.saveAccount();
     }
+
 
     /**
      * encrypt an account in a buffer based on the password
      * @returns encryted buffer
      */
 
-    async exportAccount():Promise<Buffer>{
-        if (this.account==null) throw new Error("account not opened");
-        this.account.timestamp=Date.now();
-        var accountBuffer=encode(this.account,NODESIZE);
-        var nonce=sha(Buffer.from(this.account.userId)).subarray(0,crypto_secretbox_NONCEBYTES);
-        var encryptedBuffer=symmetric_encrypt(accountBuffer,this._password,nonce);
-        return encode(encryptedBuffer,NODESIZE);
+    exportAccount():Buffer{
+        if (!this._account || !this._ownAccount || !this._dht) throw new Error("account not opened");
+        this._account.timestamp=Date.now();
+        this._dht.sign(this._account);
+        var ownAccountBuffer=encode(this._ownAccount,NODESIZE);
+        var nonce=sha(Buffer.from(this._account.userId)).subarray(0,crypto_secretbox_NONCEBYTES);
+        var r=symmetric_encrypt(ownAccountBuffer,this._password,nonce);
+        return r;
     }
 
-    /**
-     * save the account in the storage
-     */
-
-    async saveAccount(){
-        if (this.account==null || !this._dht) throw new Error("account not opened");
-        this._dht.sign(this.account);
-        await this._storage.setAccount(this.account.userId,await this.exportAccount());
-    }
 
     /**
      * import an account from a buffer
@@ -210,23 +169,43 @@ export default class DistrustAPI extends EventEmitter{
      * @returns 
      */
 
-
-    async importAccount(userId:string,encryptedAccountBuffer:Buffer,password:string):Promise<boolean>{
+    public async importAccount(userId:string,encryptedAccountBuffer:Buffer,password:string):Promise<boolean>{
         try{
             var nonce=sha(Buffer.from(userId)).subarray(0,crypto_secretbox_NONCEBYTES);
             var accountBuffer=symmetric_decrypt(encryptedAccountBuffer,password,nonce);
             if (accountBuffer==null) return false;
-            this.account=decode(accountBuffer);
-            if (!this.account) throw new Error("cannot decode account");
-            if (this.account.userId!=userId) throw new Error("mismatching userId");
-            this._password=password;
-            return true;
+            this._ownAccount=decode(accountBuffer);
+            if (!this._ownAccount) throw new Error();
+            this._account=this._ownAccount.account;
+            if (!this._account) throw new Error("cannot decode account");
+            if (this._account.userId!=userId) throw new Error("mismatching userId");
+
+            await this._initDHT();
+
+            return this._dht?this._dht.verify(this._account,this._account.id):false;
         }catch(err){
-            this.account=null;
+            this._debug("cannto import importAccount %s",err)
+            this._ownAccount=null;
+            this._account=null;
             this._password="";
             return false;
         }
     }
+
+
+    async saveAccount(){
+        if (!this._account || !this._ownAccount || !this._password || !this._dht) throw new Error("account not opened");
+        var ownAccountBuffer=this.exportAccount();
+        await this._storage.setOwnAccount(this._account.userId,ownAccountBuffer);
+        var accountBuffer=encode(this._account,MAXMSGSIZE);
+        await this._dht.sendMessage(this._account.id,accountBuffer);
+    }
+
+    get id():Buffer {
+        if (!this._account) throw Error();
+        return this._account.id;
+    }
+
 
     /**
      * login using account in local storage
@@ -236,26 +215,36 @@ export default class DistrustAPI extends EventEmitter{
      */
 
     async login(userId:string,password:string):Promise<boolean>{
-        if (this.account==null) throw new Error("account not opened");
+        if (this._account || this._ownAccount) throw new Error("account already opened");
         try{
-            var b=await this._storage.getAccount(userId);
+            var b=await this._storage.getOwnAccount(userId);
             if (!b) return false;
             if (!await this.importAccount(userId,b,password)) return false;
+            if(this._ownAccount==null || this._account==null) throw new Error();
 
-            this._dht=new DisDHT({
-                secretKey: this.account.secretKey,
-                storage:this._storage
-            })
-            this._dht.on("message",(msg:IDHTMessage)=>{
-                this.onMessage(msg);
-            });
-            await this._dht.startUp();
+            await this._initDHT();
             return true;
         }
         catch(err){
+            this._debug("error while login")
             this._dht=null
+            this._account=null
+            this._ownAccount=null;
             return false;
         }
+    }
+
+    protected async _initDHT(){
+        this._dht=new DisDHT({
+            secretKey: (this._ownAccount as IOwnAccount).secretKey,
+            storage:this._storage
+        })
+        this._dht.on("message",(msg:IDHTMessage)=>{
+            this.onMessage(msg);
+        });
+        if (Buffer.compare(this.id,this.id)) 
+            throw new Error("Cannot open init DHT for mismatching ID");
+        await this._dht.startUp();    
     }
 
     /**
@@ -263,9 +252,10 @@ export default class DistrustAPI extends EventEmitter{
      */
 
     async logout():Promise<void>{
-        if (this.account!=null) throw new Error("account opened");
-        this.saveAccount();
-        this.account=null;
+        if (this._account && this._ownAccount) 
+            await this.saveAccount();
+        this._account=null;
+        this._ownAccount=null;
         this._password="";
         if(this._dht){
             await this._dht.shutdown();
@@ -281,7 +271,7 @@ export default class DistrustAPI extends EventEmitter{
      */
 
     async changePassword(oldPassword:string,newPassword:string):Promise<boolean>{
-        if (this.account==null) throw new Error("account not opened");
+        if (this._account==null) throw new Error("account not opened");
         if (oldPassword!=this._password) return false;
         this._password=newPassword;
         await this.saveAccount();
@@ -299,12 +289,11 @@ export default class DistrustAPI extends EventEmitter{
      */
 
     async post(markdownText:string,
-            quotedPost:IMention|null=null,
-            replyTo:IMention|null=null,
+            quotedPost:ITimelineEventKey|null=null,
+            replyTo:ITimelineEventKey|null=null,
             quotedAccounts:Buffer[]|null=null,
-            media:IMediaStream[]|null=null):Promise<string>{
-        if (this.account==null) throw new Error("account not opened");
-
+            media:IMediaStream[]|null=null):Promise<void>{
+        if (this._account==null) throw new Error("account not opened");
 
         var mediaNodes:IMediaNode[]|null=null;
 
@@ -315,19 +304,24 @@ export default class DistrustAPI extends EventEmitter{
             }
         }
 
-        var post:ITimelinePost={
-            version:VERSION,
+        var post:ITimelinePostEvent={
+            accountId:this.id,
             type:TLType.post,
             ts:Date.now(),
             markdownText:markdownText,
-            quotedPost:quotedPost?quotedPost:null,
-            replyTo:replyTo?replyTo:null,
-            quotedAccounts:(quotedAccounts&&quotedAccounts.length)?quotedAccounts:null,
-            media:mediaNodes
+            quotedPost:quotedPost,
+            media:mediaNodes,
+            replyTo:replyTo,
+            quotedAccounts:quotedAccounts,
+            signature:null
         }
 
-        var r=await this._post(post);
-        return r;
+        var quoted=[];
+        if (quotedPost) quoted.push(quotedPost.accountId);
+        if (replyTo) quoted.push(replyTo.accountId);
+        if (quotedAccounts) quoted=quoted.concat(quotedAccounts);
+
+        await this._post(post,quoted);
     }
 
     async _putMedia(media:IMediaStream):Promise<IMediaNode>{
@@ -348,171 +342,162 @@ export default class DistrustAPI extends EventEmitter{
         };
     }
 
-    async updateAccount(accountUpdate:IAccountUpdate){
-        if (this.account==null) throw new Error("account not opened");
-        if (accountUpdate.bio) this.account.bio=accountUpdate.bio;
-        if (accountUpdate.userId) this.account.userId=accountUpdate.userId;
+    async updateAccount(accountUpdate:IAccountUpdateEvent){
+        if (this._account==null) throw new Error("account not opened");
+        if (accountUpdate.bio) this._account.bio=accountUpdate.bio;
+        if (accountUpdate.userId) this._account.userId=accountUpdate.userId;
         if (accountUpdate.headerStream) {
-            this.account.headerPic=await this._putMedia(accountUpdate.headerStream);
+            this._account.headerPic=await this._putMedia(accountUpdate.headerStream);
         };
         if (accountUpdate.profileStream){
-            this.account.profilePic=await this._putMedia(accountUpdate.profileStream);
+            this._account.profilePic=await this._putMedia(accountUpdate.profileStream);
         }
-        await this.saveAccount();
 
         var u:IAccountUpdateEvent={
-            version:VERSION,
-            type:TLType.post,
+            accountId:this.id,
+            type:TLType.updateAccount,
             ts:Date.now(),
-            update:accountUpdate         
+            signature:null       
         }
-        this._post(u);
-
+        await this._post(u,[]);
     }
 
-    async trust(account:Buffer,trust:Trust=Trust.trust){
-        if (this.account==null || !this._dht) throw new Error("account not opened");
+    async trust(who:Buffer,trust:Trust=Trust.follow){
+        if (!this._account || !this._dht) throw new Error("account not opened");
 
-        await this._storage.setTrust(account,trust);
+        await this._storage.setTrust(who,trust);
 
-        var te:IAccountTrustElement={
-            id:account,
-            trust:trust
-        }
-
-        this.account.trustedAuthorsBtreeRoot=
-            await this._dht.btreePut(te,this.account.trustedAuthorsBtreeRoot,trustedBTcompare,trustedBTgetIndex)
-
-        var post:ITimelineTrust={
-            version:VERSION,
+        var te:ITrustEvent={
+            accountId:this.id,
+            who:who,
             type:TLType.trust,
             ts:Date.now(),
-            trust:te
+            trust:trust,
+            signature:null
         }
-        return this._post(post);
+
+        await this._post(te,[who]);
     }
 
-    async like(mention:IMention,likeLevel:LikeLevel=LikeLevel.like):Promise<string>{
-        if (this.account==null || !this._dht) throw new Error("account not opened");
+    async like(what:ITimelineEventKey,like:Like.like){
+        if (this._account==null || !this._dht) throw new Error("account not opened");
 
-        var like:Like={
-            post:mention,
-            like:likeLevel
-        }
-
-        this.account.likesBtreeRoot=await this._dht.btreePut(like,this.account.likesBtreeRoot,compareLike,getIndexLike);
-
-        var post:ITimelineLike={
-            version:VERSION,
+        var likeEvent:ITimelineLikeEvent={
+            accountId:this.id,
+            what:what,
             type:TLType.like,
             ts:Date.now(),
-            like:like
+            like:like,
+            signature:null
         }
 
-        return await this._post(post);    
+        await this._post(likeEvent,[what.accountId]);    
     }
 
-    async owntimeline(emitevent:(tlevent:ITimelineEvent)=>Promise<boolean>):Promise<void>{
-        if (this.account==null) throw new Error("account not opened");
-        return await this.timeline(this.account.id,emitevent);
-    }
 
-    async timeline(account:Buffer,emitevent:(tlevent:ITimelineEvent)=>Promise<boolean>):Promise<void>{
-        if (this.account==null || !this._dht) throw new Error("account not opened");
-        var key=Date.now();
-        await this._dht.btreeGet(key, this.account.tlBtreeRoot,compareTL,getIndexTL,emitevent)
-    }
-
-    protected async _post(tlevent:ITimelineEvent):Promise<string>{
-        if (this.account==null) throw new Error("account not opened");
-        if (!this._dht) throw new Error();
-        this.account.tlBtreeRoot=await this._dht.btreePut(tlevent,this.account.tlBtreeRoot,tlBTreeCompare,tlBTreeGetIndex);
-        this.account.lastEvents.unshift(tlevent);
-        if (this.account.lastEvents.length>LASTEVENTMAXSIZE) this.account.lastEvents.pop();
+    protected async _post(tlevent:ITimelineEvent,quotedAccounts:Buffer[]):Promise<void>{
+        if (!this._account || !this._dht) throw new Error("account not opened");
+        this._dht.sign(tlevent);
+        this._account.ownTimelineBTree = await this._dht.btreePut(tlevent,this._account.ownTimelineBTree,tlBTreeCompare,tlBTreeGetIndex);
+        deduplicateAccounts(quotedAccounts);
+        for(let quoted of quotedAccounts){
+            let qte:IQuotationTimelineEvent={
+                who:quoted,
+                ev:tlevent,
+                signature:null
+            }
+            this._dht.sign(qte);
+            this._account.ownQuotationsBTree = await this._dht.btreePut(qte,this._account.ownQuotationsBTree,quotetlBTreeCompare,quotetlBTreeGetIndex)
+        }
         await this.saveAccount();
-        await this.messageToEveryone();
-        return this._packUrl(this.account.id,tlevent.ts);
+        await this.messageToEveryone(quotedAccounts);
     }
 
     protected _packUrl(account:Buffer,ts:number){
         return DISSCHEMA+"://"+account.toString('hex')+'/'+ts
     }
 
-    private getMentioned():Buffer[]{
-        if(!this.account) throw new Error();
-        var smentioned=new Map<string,Buffer>();
-
-        const addAccount=(account:Buffer|null)=>{
-            if (!account) return;
-            smentioned.set(account.toString('hex'),account);
-        }
-
-        const addAccounts=(accounts:Buffer[]|null)=>{
-            if (!accounts) return;
-            for(let account of accounts) addAccount(account);
-        }  
-        
-        const addMention=(mention:IMention|null)=>{
-            if (!mention) return;
-            addAccount(mention.account);
-        }
-
-        const processPost=(ev:ITimelinePost)=>{
-            addAccounts(ev.quotedAccounts);
-            addMention(ev.quotedPost);
-            addMention(ev.replyTo);
-        }
-
-        const processTrust=(ev:ITimelineTrust)=>{
-            if (ev.trust.trust==Trust.distrust) return;
-            addAccount(ev.trust.id)
-        }
-
-        for (var ev of this.account.lastEvents){
-            switch(ev.type){
-                case TLType.post:
-                    processPost(ev as ITimelinePost)
-                    break;
-                case TLType.like:
-                    addMention((ev as ITimelineLike).like.post);
-                    break;
-                case TLType.trust:
-                    processTrust(ev as ITimelineTrust);
-                    break;
-            }
-        }
-        return Array.from(smentioned.values());
-    }
-
     //inform who trusts me and who i mentioned
-    protected async messageToEveryone(){
-        if (!this.account) throw new Error();
-        var accountBuffer=encode(this.account,MAXMSGSIZE);
-        var mentions:Buffer[]=this.getMentioned();
-        for (var mentioned of mentions){
-            await this.messageOne(mentioned,accountBuffer);
+    protected async messageToEveryone(quotedAccounts:Buffer[]){
+        if (!this._account || !this._dht) throw new Error("account not opened");
+
+        let accountBuffer=encode(this._account,MAXMSGSIZE);
+
+        for (var quoted of quotedAccounts){
+            await this._dht.sendMessage(quoted,accountBuffer);
         }
-        if(this.account.relyOnAuthorsBtreeRoot)
-            await this.multicast(this.account.relyOnAuthorsBtreeRoot,accountBuffer);
+
+
+        if (this._account.followersBTree){
+            await this._dht.cascadeToFollowers(this._account.followersBTree,accountBuffer,followercCompare,followerGetIndex);
+        }
+
     }
 
-    protected async messageOne(target:Buffer,msg:Buffer){
-        if (!this._dht) throw new Error();
-        await this._dht.sendMessage(target,msg);
-    }
-
-    protected async multicast(relayNode:Buffer,msg:Buffer){
-        if (!this._dht) throw new Error();
-        //await this._dht.multicast(relayNode,msg);
-
+    protected async addFollower(fe:ITrustEvent){
+        if (!this._dht || ! this._account) throw new Error();
+        if (Buffer.compare(fe.who,this.id)) return;
+        if (fe.trust!=Trust.follow) return;
+        this._account.followersBTree=await this._dht.btreePut(fe,this._account.followersBTree,followercCompare,followerGetIndex)
+        this.saveAccount();
     }
     
-    protected async onMessage(msg:IDHTMessage){
 
+    protected async onMessage(msg:IDHTMessage){
+        if (!this._dht || !this._account) 
+            return;
+        var acc:IAccount=decode(msg.content);
+        if (!this._dht.verify(acc,acc.id))
+            return;   
+        if (Buffer.compare(acc.id,this.id)==0){
+            await this.ownAccountReceived(acc);
+        }
+        else{
+            await this.otherAccountReceived(acc)
+        }
     }
+
+    protected async ownAccountReceived(acc:IAccount){
+        if (!this._dht || !this._account) 
+            return;
+        if (acc.timestamp<=this._account.timestamp)
+            return;
+        this._account=acc;
+        await this.saveAccount();
+    }
+
+    protected async otherAccountReceived(acc:IAccount){
+        if (!this._dht || !this._account) 
+            return;
+        if (await this.doIFollow(acc.id)){
+            await this.readTimeline(acc);
+        }else{
+            await this.readQuotes(acc);           
+        }
+    }
+
+    protected async doIFollow(accountId:Buffer):Promise<boolean>{
+        return true; //TODO
+    }
+
+    protected async readTimeline(acc:IAccount){
+        //TODO
+    }
+
+    protected async readQuotes(acc:IAccount){
+        //TODO
+    }
+
 
 }
 
+function followercCompare(a:ITrustEvent,b:ITrustEvent):number{
+    return Buffer.compare(a.accountId,b.accountId);
+}
+
+function followerGetIndex(a:ITrustEvent):any{
+    return a.accountId;
+}
 
 function tlBTreeCompare(a:ITimelineEvent,b:ITimelineEvent):number{
     return a.ts-b.ts;
@@ -520,4 +505,30 @@ function tlBTreeCompare(a:ITimelineEvent,b:ITimelineEvent):number{
 
 function tlBTreeGetIndex(a:ITimelineEvent):number{
     return a.ts;
+}
+
+function quotetlBTreeCompare(a:IQuotationTimelineEvent,b:IQuotationTimelineEvent):number{
+    let r=Buffer.compare(a.who,b.who);
+    if(r) return r;
+    return a.ev.ts-b.ev.ts;
+}
+
+function quotetlBTreeGetIndex(a:IQuotationTimelineEvent):any{
+    return {
+        who:a.who,
+        ev:{
+            ts:a.ev.ts
+        }
+    }
+}
+
+function deduplicateAccounts(accs:Buffer []){
+    for (let i=0;i<accs.length-1;i++){
+        for(let j=0;i<accs.length;){
+            if (Buffer.compare(accs[i],accs[j])==0)
+                accs.splice(j,1);
+            else 
+                j++;
+        }
+    }
 }
